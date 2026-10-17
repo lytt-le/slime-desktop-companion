@@ -809,6 +809,14 @@ fn app(respawned: bool) {
                                 }
                             }
                             Some(Hit::DropShot) => attachment = None,
+                            Some(Hit::ClearChat) => {
+                                brain.clear();
+                                chat_log.clear();
+                                if let Ok(b) = backend(&cfg) {
+                                    brain.warm(&b);
+                                }
+                                speech.say("Fresh start! What shall we chat about?");
+                            }
                             Some(h @ (Hit::Slider | Hit::Tune(_))) => {
                                 panel_drag = Some(h);
                                 set_slider(&mut cfg, h, ui::slider_at(h, x, font_px));
