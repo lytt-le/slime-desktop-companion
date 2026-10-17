@@ -696,44 +696,49 @@ fn real_fullscreen_windows() {
     eprintln!("PX {} fullscreen of {} monitors", scan.fullscreen.len(), scan.monitors.len());
 }
 
-/// A hard throw into a wall registers as a hit (he gets cross); a gentle one doesn't.
-/// Shaking him about builds up the shake meter (he gets dizzy); carrying him doesn't.
+/// Only a hard throw into a wall makes him cross, and only a hard shaking makes him
+/// dizzy: ordinary throws, bumps, carrying and moderate shaking don't.
 #[test]
 fn notices_wall_hits_and_shaking() {
+    use crate::fx::{ANGRY_HIT, DIZZY_SHAKE};
+    // Flung sideways through the air at the screen edge (the fastest throw is 3500 px/s).
     let throw = |speed: f32| {
-        let mut w = world_at(v2(320.0, 330.0));
+        let mut w = world_at(v2(250.0, 330.0));
         let mut sheet = Sheet::new();
         run(&mut w, 120, &mut sheet, 0);
-        w.take_wall_hit();
         w.start_grab(w.centroid());
-        w.step(FRAME);
-        w.release(v2(-speed, -100.0));
+        for k in 0..10 {
+            w.drag_to(v2(250.0, 330.0 - k as f32 * 15.0));
+            w.step(FRAME);
+        }
+        w.take_wall_hit();
+        w.release(v2(-speed, -speed * 0.2));
         let mut hit = 0.0f32;
-        for _ in 0..120 {
+        for _ in 0..90 {
             w.step(FRAME);
             hit = hit.max(w.take_wall_hit());
         }
         hit
     };
-    let (hard, soft) = (throw(3000.0), throw(500.0));
-    eprintln!("PX wall hit: hard throw {hard:.2}, gentle {soft:.2}");
-    assert!(hard > crate::fx::ANGRY_HIT, "hard throw only {hard}");
-    assert!(soft < crate::fx::ANGRY_HIT, "gentle throw {soft}");
+    let hits: Vec<(f32, f32)> = [1000.0, 2000.0, 2500.0, 3000.0, 3500.0].iter().map(|&sp| (sp, throw(sp))).collect();
+    eprintln!("PX wall hits (throw px/s, hit): {hits:?}");
+    for &(sp, hit) in &hits {
+        assert_eq!(hit > ANGRY_HIT, sp >= 3000.0, "a {sp} px/s throw scored {hit}");
+    }
 
-    let carry = |shake: bool| {
+    // Held and shaken side to side (shakes a second, px each way), or carried along.
+    let shake = |hz: f32, amp: f32| {
         let mut w = world_at(v2(320.0, 330.0));
         let mut sheet = Sheet::new();
         run(&mut w, 120, &mut sheet, 0);
         let at = w.centroid();
         w.start_grab(at);
         let mut most = 0.0f32;
-        for f in 0..90 {
+        for f in 0..120 {
             let t = f as f32 * FRAME;
-            let p = if shake {
-                // A brisk shake: 4 times a second, 80 px each way.
-                at + v2((t * 4.0 * std::f32::consts::TAU).sin() * 80.0, -40.0)
+            let p = if hz > 0.0 {
+                at + v2((t * hz * std::f32::consts::TAU).sin() * amp, -40.0)
             } else {
-                // Carried across the screen and waved about a little.
                 at + v2(t * 200.0, -40.0 + (t * 3.0).sin() * 20.0)
             };
             w.drag_to(p);
@@ -742,10 +747,12 @@ fn notices_wall_hits_and_shaking() {
         }
         most
     };
-    let (shaken, carried) = (carry(true), carry(false));
-    eprintln!("PX shake: shaken {shaken:.2}, carried {carried:.2}");
-    assert!(shaken > crate::fx::DIZZY_SHAKE, "shaking only {shaken}");
-    assert!(carried < crate::fx::DIZZY_SHAKE, "carrying {carried}");
+    let shakes: Vec<((f32, f32), f32)> =
+        [(0.0, 0.0), (2.0, 120.0), (3.0, 80.0), (4.0, 80.0), (4.0, 150.0), (6.0, 100.0), (6.0, 200.0)].iter().map(|&(hz, amp)| ((hz, amp), shake(hz, amp))).collect();
+    eprintln!("PX shake ((Hz, px), meter): {shakes:?}");
+    for &((hz, amp), m) in &shakes {
+        assert_eq!(m > DIZZY_SHAKE, hz * amp >= 600.0, "shaking {hz} Hz x {amp} px scored {m}");
+    }
 }
 
 /// His moods, drawn: cross brows, spinning dizzy eyes, asleep with Z's, smoking.

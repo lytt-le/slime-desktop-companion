@@ -7,10 +7,12 @@ use super::draw::{EyeBlock, Look};
 use super::sim::{Kind, World};
 use crate::physics::{v2, V2};
 
-/// A wall hit this hard (cells per substep beyond a gentle touch) makes him cross.
-pub const ANGRY_HIT: f32 = 1.5;
-/// Shaken this hard (the world's shake meter), he gets dizzy.
-pub const DIZZY_SHAKE: f32 = 30.0;
+/// A wall hit this hard (cells per substep beyond a gentle touch) makes him cross: only
+/// a hard fling, hitting at about 2800 px/s or more (the fastest throw is 3500).
+pub const ANGRY_HIT: f32 = 7.0;
+/// Shaken this hard (the world's shake meter), he gets dizzy: only a vigorous shaking,
+/// like four shakes a second 150 px each way. (Moderate shaking reaches about 70.)
+pub const DIZZY_SHAKE: f32 = 110.0;
 const ANGRY_FOR: f32 = 2.5;
 const DIZZY_FOR: f32 = 4.0;
 /// A Z floats up every so often while he sleeps (s), and lives this long.
