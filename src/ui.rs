@@ -133,8 +133,10 @@ pub enum Hit {
     DropShot,
     /// Forget the conversation and start a new session.
     ClearChat,
+    /// A section title: opens or closes the section (three quick clicks on "Colour" or
+    /// "Brain": an easter egg).
+    Title(Section),
     // Settings tab.
-    Slider,
     Jump,
     Facts,
     Idle,
@@ -148,15 +150,13 @@ pub enum Hit {
     ClearKey,
     Reset,
     Quit,
-    /// The "Brain" title (three quick clicks: nootropic mode).
-    BrainTitle,
     // Customisation tab.
+    /// The size slider.
+    Slider,
     Swatch(usize),
     /// One of the Customisation sliders.
     Tune(usize),
     ResetLook,
-    /// The "Colour" title (three quick clicks: a rainbow slime).
-    ColourTitle,
 }
 
 pub const TABS: [&str; 3] = ["Chat", "Settings", "Customisation"];
@@ -164,6 +164,29 @@ pub const TAB_CHAT: usize = 0;
 pub const TAB_LOOK: usize = 2;
 pub const LOOK_N: usize = 10;
 pub const SWATCH_N: usize = 9;
+
+/// The collapsible sections of the Settings and Customisation tabs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Section {
+    Features,
+    Brain,
+    Colour,
+    Feel,
+}
+
+pub const SECTIONS: [Section; 4] = [Section::Features, Section::Brain, Section::Colour, Section::Feel];
+pub const SECTION_N: usize = SECTIONS.len();
+
+impl Section {
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Features => "Features",
+            Section::Brain => "Brain",
+            Section::Colour => "Colour",
+            Section::Feel => "Feel",
+        }
+    }
+}
 
 /// What the panel shows.
 pub struct PanelView<'a> {
@@ -205,6 +228,8 @@ pub struct PanelView<'a> {
     /// Easter eggs on: banners across the header.
     pub rainbow: bool,
     pub nootropic: bool,
+    /// Which sections are closed (in `SECTIONS` order).
+    pub collapsed: [bool; SECTION_N],
     pub hover: Option<Hit>,
 }
 
@@ -229,41 +254,26 @@ const TAB_Y: usize = HEADER_H + 2;
 const TAB_H: usize = 12;
 // Chat tab: the log (rows of text), the input line, and the brain line at the bottom.
 const CHAT_LOG_Y: usize = 30;
-const CHAT_LOG_ROWS: usize = 11;
+const CHAT_LOG_ROWS: usize = 13;
 const CHAT_LINE_H: usize = GLYPH_H + 2;
 const CHAT_COLS: usize = PANEL_COLS - 1;
 /// The screenshot row (button, or thumbnail and label), between the log and the input.
-const ROW_SHOT: usize = 149;
-const ROW_INPUT: usize = 178;
+const ROW_SHOT: usize = CHAT_LOG_Y + CHAT_LOG_ROWS * CHAT_LINE_H + 9;
+const ROW_INPUT: usize = ROW_SHOT + 29;
 /// "Clear chat", on the bottom row beside the brain line.
 const CLEAR_X: usize = col(PANEL_COLS - 10) - 1;
 const CLEAR_W: usize = 10 * ADVANCE + 1;
-// Settings tab rows.
-const ROW_SIZE: usize = 33;
-const ROW_JUMP: usize = 46;
-const ROW_FACTS: usize = 58;
-const ROW_IDLE: usize = 70;
-const ROW_KEEPY: usize = 82;
-const ROW_BRAIN: usize = 96;
-const ROW_PROVIDER: usize = 109;
-const ROW_MODEL: usize = 122;
-const ROW_WEB: usize = 135;
-const ROW_KEY: usize = 148;
-const ROW_STATUS: usize = 161;
-// Customisation tab rows.
-const ROW_COLOUR: usize = 31;
-const ROW_SWATCHES: usize = 42;
+/// Settings and Customisation: where the first row goes (the rest follow, see `rows`).
+const ROWS_Y: usize = 32;
 const SWATCH_W: usize = 21;
-const ROW_FEEL: usize = 94;
 /// Bottom row (every tab).
-const ROW_BUTTONS: usize = 194;
+const ROW_BUTTONS: usize = 214;
 const PANEL_H: usize = ROW_BUTTONS + GLYPH_H + PAD + 2;
-/// Size slider track ends, in font pixels.
-const SLIDER_X0: usize = PAD + 6 * ADVANCE;
-const SLIDER_X1: usize = PAD + 29 * ADVANCE;
-/// Customisation slider track ends.
+/// Customisation slider track ends; the size slider's stops short for its percentage.
 const TUNE_X0: usize = PAD + 9 * ADVANCE;
 const TUNE_X1: usize = PAD + 33 * ADVANCE;
+const SLIDER_X0: usize = TUNE_X0;
+const SLIDER_X1: usize = PAD + 28 * ADVANCE;
 /// Status lines fit this many characters.
 pub const STATUS_COLS: usize = PANEL_COLS;
 
@@ -281,18 +291,67 @@ const fn col(c: usize) -> usize {
     PAD + c * ADVANCE
 }
 
-/// Row of Customisation slider `i`.
-fn tune_row(i: usize) -> usize {
-    if i < COLOUR_SLIDERS {
-        57 + 12 * i
-    } else {
-        ROW_FEEL + 12 + 12 * (i - COLOUR_SLIDERS)
-    }
+/// A row of the Settings or Customisation tab.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Row {
+    Title(Section),
+    Size,
+    /// A checkbox (its hit says which).
+    Check(Hit),
+    Provider,
+    Model,
+    Key,
+    Status,
+    Swatches,
+    Tune(usize),
 }
 
-/// Where a divider's title sits: (x, y, w, h).
-fn title_rect(y: usize, label: &str) -> (usize, usize, usize, usize) {
-    (PAD - 1, y - 2, text_width(label) + 2, GLYPH_H + 3)
+/// The rows of `tab` that show, and where each goes: a closed section shows just its
+/// title, and everything below moves up.
+fn rows(tab: usize, collapsed: &[bool; SECTION_N]) -> Vec<(Row, usize)> {
+    let all: Vec<Row> = if tab == TAB_LOOK {
+        let mut v = vec![Row::Size, Row::Title(Section::Colour), Row::Swatches];
+        v.extend((0..COLOUR_SLIDERS).map(Row::Tune));
+        v.push(Row::Title(Section::Feel));
+        v.extend((COLOUR_SLIDERS..LOOK_N).map(Row::Tune));
+        v
+    } else {
+        vec![
+            Row::Title(Section::Features),
+            Row::Check(Hit::Jump),
+            Row::Check(Hit::Facts),
+            Row::Check(Hit::Idle),
+            Row::Check(Hit::Keepy),
+            Row::Title(Section::Brain),
+            Row::Provider,
+            Row::Model,
+            Row::Check(Hit::Web),
+            Row::Key,
+            Row::Status,
+        ]
+    };
+    let mut y = ROWS_Y;
+    let mut open = true;
+    let mut out = Vec::new();
+    for row in all {
+        if let Row::Title(s) = row {
+            // A little more room above a title.
+            if y > ROWS_Y {
+                y += 2;
+            }
+            open = !collapsed[s as usize];
+        } else if !open {
+            continue;
+        }
+        out.push((row, y));
+        y += match row {
+            Row::Title(_) | Row::Check(_) | Row::Tune(_) => 12,
+            Row::Size | Row::Provider | Row::Model | Row::Key => 13,
+            Row::Swatches => 15,
+            Row::Status => 20,
+        };
+    }
+    out
 }
 
 /// Left edge and width of tab `i`.
@@ -308,7 +367,8 @@ pub fn panel_size(p: usize) -> (usize, usize) {
 
 /// Clickable areas on `tab`, in font pixels: (hit, x, y, w, h). `has_shot`: a screenshot
 /// is attached (the Chat tab then offers to remove it instead of taking one).
-fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool) -> Vec<(Hit, usize, usize, usize, usize)> {
+/// `collapsed`: which sections are closed.
+fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool, collapsed: &[bool; SECTION_N]) -> Vec<(Hit, usize, usize, usize, usize)> {
     let full = PANEL_W - 2 * PAD + 2;
     let mut v = vec![(Hit::Close, PANEL_W - 15, 0, 15, HEADER_H)];
     for i in 0..TABS.len() {
@@ -324,48 +384,51 @@ fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool) -> Vec<(Hit, usize,
         v.push((Hit::ClearChat, CLEAR_X, ROW_BUTTONS - 2, CLEAR_W, GLYPH_H + 4));
         return v;
     }
-    if tab == TAB_LOOK {
-        let (x, y, w, h) = title_rect(ROW_COLOUR, "Colour");
-        v.push((Hit::ColourTitle, x, y, w, h));
-        for i in 0..SWATCH_N {
-            v.push((Hit::Swatch(i), PAD - 1 + i * (SWATCH_W + 2), ROW_SWATCHES, SWATCH_W, 11));
+    for (row, y) in rows(tab, collapsed) {
+        match row {
+            Row::Title(s) => v.push((Hit::Title(s), PAD - 1, y - 2, full, GLYPH_H + 3)),
+            Row::Size => v.push((Hit::Slider, SLIDER_X0 - 4, y - 3, SLIDER_X1 - SLIDER_X0 + 8, GLYPH_H + 5)),
+            Row::Check(h) => v.push((h, PAD - 1, y - 2, full, GLYPH_H + 3)),
+            Row::Provider => v.extend([
+                (Hit::ProviderPrev, col(9), y - 2, 3 * ADVANCE, GLYPH_H + 4),
+                (Hit::ProviderNext, col(12), y - 2, col(PANEL_COLS) - col(12), GLYPH_H + 4),
+            ]),
+            Row::Model => v.extend([
+                (Hit::ModelPrev, col(9), y - 2, 3 * ADVANCE, GLYPH_H + 4),
+                (Hit::ModelNext, col(12), y - 2, col(PANEL_COLS) - col(12), GLYPH_H + 4),
+            ]),
+            Row::Key if key_buttons => v.extend([
+                (Hit::PasteKey, col(21) - 3, y - 2, 5 * ADVANCE + 5, GLYPH_H + 4),
+                (Hit::ClearKey, col(28) - 3, y - 2, 5 * ADVANCE + 5, GLYPH_H + 4),
+            ]),
+            Row::Key | Row::Status => {}
+            Row::Swatches => {
+                for i in 0..SWATCH_N {
+                    v.push((Hit::Swatch(i), PAD - 1 + i * (SWATCH_W + 2), y, SWATCH_W, 11));
+                }
+            }
+            Row::Tune(i) => v.push((Hit::Tune(i), TUNE_X0 - 4, y - 3, TUNE_X1 - TUNE_X0 + 8, GLYPH_H + 5)),
         }
-        for i in 0..LOOK_N {
-            v.push((Hit::Tune(i), TUNE_X0 - 4, tune_row(i) - 3, TUNE_X1 - TUNE_X0 + 8, GLYPH_H + 5));
-        }
-        v.push((Hit::ResetLook, PAD - 1, ROW_BUTTONS - 2, full, GLYPH_H + 4));
-        return v;
     }
-    v.extend([
-        (Hit::Slider, SLIDER_X0 - 4, ROW_SIZE - 3, SLIDER_X1 - SLIDER_X0 + 8, GLYPH_H + 5),
-        (Hit::Jump, PAD - 1, ROW_JUMP - 2, full, GLYPH_H + 3),
-        (Hit::Facts, PAD - 1, ROW_FACTS - 2, full, GLYPH_H + 3),
-        (Hit::Idle, PAD - 1, ROW_IDLE - 2, full, GLYPH_H + 3),
-        (Hit::Keepy, PAD - 1, ROW_KEEPY - 2, full, GLYPH_H + 3),
-        (Hit::ProviderPrev, col(9), ROW_PROVIDER - 2, 3 * ADVANCE, GLYPH_H + 4),
-        (Hit::ProviderNext, col(12), ROW_PROVIDER - 2, col(PANEL_COLS) - col(12), GLYPH_H + 4),
-        (Hit::ModelPrev, col(9), ROW_MODEL - 2, 3 * ADVANCE, GLYPH_H + 4),
-        (Hit::ModelNext, col(12), ROW_MODEL - 2, col(PANEL_COLS) - col(12), GLYPH_H + 4),
-        (Hit::Web, PAD - 1, ROW_WEB - 2, full, GLYPH_H + 3),
-        (Hit::Reset, PAD - 1, ROW_BUTTONS - 2, 13 * ADVANCE, GLYPH_H + 4),
-        (Hit::Quit, col(PANEL_COLS - 8) - 1, ROW_BUTTONS - 2, 8 * ADVANCE + 1, GLYPH_H + 4),
-    ]);
-    let (x, y, w, h) = title_rect(ROW_BRAIN, "Brain");
-    v.push((Hit::BrainTitle, x, y, w, h));
-    if key_buttons {
-        v.push((Hit::PasteKey, col(21) - 3, ROW_KEY - 2, 5 * ADVANCE + 5, GLYPH_H + 4));
-        v.push((Hit::ClearKey, col(28) - 3, ROW_KEY - 2, 5 * ADVANCE + 5, GLYPH_H + 4));
+    if tab == TAB_LOOK {
+        v.push((Hit::ResetLook, PAD - 1, ROW_BUTTONS - 2, full, GLYPH_H + 4));
+    } else {
+        v.extend([
+            (Hit::Reset, PAD - 1, ROW_BUTTONS - 2, 13 * ADVANCE, GLYPH_H + 4),
+            (Hit::Quit, col(PANEL_COLS - 8) - 1, ROW_BUTTONS - 2, 8 * ADVANCE + 1, GLYPH_H + 4),
+        ]);
     }
     v
 }
 
 /// What's under (`x`, `y`) screen pixels from the panel's corner.
-pub fn panel_hit(x: i32, y: i32, tab: usize, key_buttons: bool, has_shot: bool, p: usize) -> Option<Hit> {
+#[allow(clippy::too_many_arguments)]
+pub fn panel_hit(x: i32, y: i32, tab: usize, key_buttons: bool, has_shot: bool, collapsed: &[bool; SECTION_N], p: usize) -> Option<Hit> {
     if x < 0 || y < 0 {
         return None;
     }
     let (fx, fy) = (x as usize / p, y as usize / p);
-    panel_hits(tab, key_buttons, has_shot)
+    panel_hits(tab, key_buttons, has_shot, collapsed)
         .into_iter()
         .find(|&(_, hx, hy, hw, hh)| fx >= hx && fx < hx + hw && fy >= hy && fy < hy + hh)
         .map(|h| h.0)
@@ -445,9 +508,23 @@ impl Canvas<'_> {
         self.text(col(PANEL_COLS - 1) - 2, y, ">", PROMPT);
     }
 
-    fn divider(&mut self, y: usize, label: &str) {
-        self.text(PAD, y, label, PROMPT);
-        let x = PAD + text_width(label) + 3;
+    /// A section title: an arrow (down when open, right when closed), the label, and a
+    /// rule to the edge.
+    fn title(&mut self, y: usize, label: &str, open: bool, hover: bool) {
+        if hover {
+            self.rect(PAD - 1, y - 2, PANEL_W - 2 * PAD + 2, GLYPH_H + 3, px(HOVER, 1.0));
+        }
+        let c = px(PROMPT, 1.0);
+        for i in 0..3 {
+            if open {
+                self.rect(PAD + i, y + 1 + i, 5 - 2 * i, 1, c);
+            } else {
+                self.rect(PAD + 1 + i, y + i, 1, 5 - 2 * i, c);
+            }
+        }
+        let tx = PAD + 8;
+        self.text(tx, y, label, PROMPT);
+        let x = tx + text_width(label) + 3;
         self.rect(x, y + 3, PANEL_W - PAD - x, 1, px(TRACK, 1.0));
     }
 
@@ -550,37 +627,79 @@ pub fn draw_panel(buf: &mut [u32], stride: usize, v: &PanelView, p: usize) -> (u
     (sw, sh)
 }
 
-fn draw_settings_tab(cv: &mut Canvas, v: &PanelView) {
+/// Draws one row of the Settings or Customisation tab at `y`.
+fn draw_row(cv: &mut Canvas, v: &PanelView, row: Row, y: usize) {
     let hover = |h: Hit| v.hover == Some(h);
-    cv.text(PAD, ROW_SIZE, "Size", TEXT);
-    cv.slider(SLIDER_X0, SLIDER_X1, ROW_SIZE, v.size, v.size_normal, hover(Hit::Slider), Track::Plain);
-    let pct = format!("{}%", v.size_pct);
-    cv.text(col(PANEL_COLS) - text_width(&pct) - 3, ROW_SIZE, &pct, TEXT);
-
-    cv.checkbox(ROW_JUMP, "Jump to clicks", v.jump, hover(Hit::Jump));
-    cv.checkbox(ROW_FACTS, "Fun facts", v.facts, hover(Hit::Facts));
-    cv.checkbox(ROW_IDLE, "Idle antics", v.idle, hover(Hit::Idle));
-    cv.checkbox(ROW_KEEPY, "Keepy uppies", v.keepy, hover(Hit::Keepy));
-    let best = format!("Best: {}", v.keepy_best);
-    cv.text(col(PANEL_COLS) - text_width(&best) - 3, ROW_KEEPY, &best, HINT);
-
-    cv.divider(ROW_BRAIN, "Brain");
-    cv.selector(ROW_PROVIDER, "Provider", v.provider, v.hover, Hit::ProviderPrev, Hit::ProviderNext);
-    cv.selector(ROW_MODEL, "Model", v.model, v.hover, Hit::ModelPrev, Hit::ModelNext);
-    cv.checkbox(ROW_WEB, "Search the web", v.web, hover(Hit::Web));
-    cv.text(PAD, ROW_KEY, "Key", TEXT);
-    let room = if v.key_buttons { 11 } else { PANEL_COLS - 10 };
-    cv.text(col(9), ROW_KEY, &v.key.chars().take(room).collect::<String>(), HINT);
-    if v.key_buttons {
-        cv.button(col(21) - 3, ROW_KEY - 2, 5 * ADVANCE + 5, "Paste", hover(Hit::PasteKey));
-        if v.key_clearable {
-            cv.button(col(28) - 3, ROW_KEY - 2, 5 * ADVANCE + 5, "Clear", hover(Hit::ClearKey));
+    match row {
+        Row::Title(s) => cv.title(y, s.label(), !v.collapsed[s as usize], hover(Hit::Title(s))),
+        Row::Size => {
+            cv.text(PAD, y, "Size", TEXT);
+            cv.slider(SLIDER_X0, SLIDER_X1, y, v.size, v.size_normal, hover(Hit::Slider), Track::Plain);
+            let pct = format!("{}%", v.size_pct);
+            cv.text(col(PANEL_COLS) - text_width(&pct) - 3, y, &pct, TEXT);
+        }
+        Row::Check(h) => {
+            let (label, on) = match h {
+                Hit::Jump => ("Jump to clicks", v.jump),
+                Hit::Facts => ("Fun facts", v.facts),
+                Hit::Idle => ("Idle antics", v.idle),
+                Hit::Keepy => ("Keepy uppies", v.keepy),
+                _ => ("Search the web", v.web),
+            };
+            cv.checkbox(y, label, on, hover(h));
+            if h == Hit::Keepy {
+                let best = format!("Best: {}", v.keepy_best);
+                cv.text(col(PANEL_COLS) - text_width(&best) - 3, y, &best, HINT);
+            }
+        }
+        Row::Provider => cv.selector(y, "Provider", v.provider, v.hover, Hit::ProviderPrev, Hit::ProviderNext),
+        Row::Model => cv.selector(y, "Model", v.model, v.hover, Hit::ModelPrev, Hit::ModelNext),
+        Row::Key => {
+            cv.text(PAD, y, "Key", TEXT);
+            let room = if v.key_buttons { 11 } else { PANEL_COLS - 10 };
+            cv.text(col(9), y, &v.key.chars().take(room).collect::<String>(), HINT);
+            if v.key_buttons {
+                cv.button(col(21) - 3, y - 2, 5 * ADVANCE + 5, "Paste", hover(Hit::PasteKey));
+                if v.key_clearable {
+                    cv.button(col(28) - 3, y - 2, 5 * ADVANCE + 5, "Clear", hover(Hit::ClearKey));
+                }
+            }
+        }
+        Row::Status => {
+            for (i, line) in super::font::wrap(v.status, STATUS_COLS).iter().take(2).enumerate() {
+                cv.text(PAD, y + i * (GLYPH_H + 2), line, PROMPT);
+            }
+        }
+        Row::Swatches => {
+            for (i, &c) in v.swatches.iter().enumerate() {
+                let x = PAD - 1 + i * (SWATCH_W + 2);
+                let on = v.swatch_on == Some(i);
+                if on || hover(Hit::Swatch(i)) {
+                    // A frame around the chosen (or hovered) colour.
+                    cv.boxed(x, y, SWATCH_W, 11, if on { BORDER } else { TRACK });
+                    cv.boxed(x + 2, y + 2, SWATCH_W - 4, 7, c);
+                } else {
+                    cv.boxed(x, y, SWATCH_W, 11, c);
+                }
+            }
+        }
+        Row::Tune(i) => {
+            cv.text(PAD, y, v.look_labels[i], TEXT);
+            let track = match i {
+                0 => Track::Hue,
+                1 => Track::Vivid(v.look[0]),
+                _ => Track::Plain,
+            };
+            cv.slider(TUNE_X0, TUNE_X1, y, v.look[i], v.look_normal[i], hover(Hit::Tune(i)), track);
         }
     }
-    for (i, line) in super::font::wrap(v.status, STATUS_COLS).iter().take(2).enumerate() {
-        cv.text(PAD, ROW_STATUS + i * (GLYPH_H + 2), line, PROMPT);
-    }
+}
 
+fn draw_settings_tab(cv: &mut Canvas, v: &PanelView) {
+    let hover = |h: Hit| v.hover == Some(h);
+    for (row, y) in rows(v.tab, &v.collapsed) {
+        draw_row(cv, v, row, y);
+    }
     cv.rect(PAD, ROW_BUTTONS - 6, PANEL_W - 2 * PAD, 1, px(TRACK, 1.0));
     cv.button(PAD - 1, ROW_BUTTONS - 2, 13 * ADVANCE, "Reset slime", hover(Hit::Reset));
     cv.button(col(PANEL_COLS - 8) - 1, ROW_BUTTONS - 2, 8 * ADVANCE + 1, "Quit", hover(Hit::Quit));
@@ -668,30 +787,8 @@ fn draw_chat_tab(cv: &mut Canvas, v: &PanelView) {
 
 fn draw_look_tab(cv: &mut Canvas, v: &PanelView) {
     let hover = |h: Hit| v.hover == Some(h);
-    cv.divider(ROW_COLOUR, "Colour");
-    for (i, &c) in v.swatches.iter().enumerate() {
-        let x = PAD - 1 + i * (SWATCH_W + 2);
-        let on = v.swatch_on == Some(i);
-        if on || hover(Hit::Swatch(i)) {
-            // A frame around the chosen (or hovered) colour.
-            cv.boxed(x, ROW_SWATCHES, SWATCH_W, 11, if on { BORDER } else { TRACK });
-            cv.boxed(x + 2, ROW_SWATCHES + 2, SWATCH_W - 4, 7, c);
-        } else {
-            cv.boxed(x, ROW_SWATCHES, SWATCH_W, 11, c);
-        }
-    }
-    for i in 0..LOOK_N {
-        if i == COLOUR_SLIDERS {
-            cv.divider(ROW_FEEL, "Feel");
-        }
-        let y = tune_row(i);
-        cv.text(PAD, y, v.look_labels[i], TEXT);
-        let track = match i {
-            0 => Track::Hue,
-            1 => Track::Vivid(v.look[0]),
-            _ => Track::Plain,
-        };
-        cv.slider(TUNE_X0, TUNE_X1, y, v.look[i], v.look_normal[i], hover(Hit::Tune(i)), track);
+    for (row, y) in rows(v.tab, &v.collapsed) {
+        draw_row(cv, v, row, y);
     }
     cv.rect(PAD, ROW_BUTTONS - 6, PANEL_W - 2 * PAD, 1, px(TRACK, 1.0));
     cv.button(PAD - 1, ROW_BUTTONS - 2, PANEL_W - 2 * PAD + 2, "Back to the classic slime", hover(Hit::ResetLook));

@@ -49,7 +49,7 @@ use sim::{Antic, World, FRAME};
 
 use brain::Provider;
 use settings::{Settings, MAX_SIZE, MIN_SIZE};
-use ui::Hit;
+use ui::{Hit, Section};
 
 const WM_TRAY: u32 = WM_APP + 1;
 /// Longest question the chat box accepts (characters).
@@ -769,9 +769,9 @@ fn app(respawned: bool) {
                     }
                     Event::PanelDown(x, y) if panel_at.is_some() => {
                         let note = |s: &str| Some((s.to_string(), 4.0f32));
-                        let hit = ui::panel_hit(x, y, panel_tab, cfg.provider.needs_key(), attachment.is_some(), font_px);
+                        let hit = ui::panel_hit(x, y, panel_tab, cfg.provider.needs_key(), attachment.is_some(), &cfg.collapsed, font_px);
                         let tripled = match hit {
-                            Some(h @ (Hit::ColourTitle | Hit::BrainTitle)) => {
+                            Some(h @ Hit::Title(_)) => {
                                 let quick = title_taps.0 == Some(h) && title_taps.2.elapsed().as_secs_f32() < TRIPLE_GAP;
                                 title_taps = (Some(h), if quick { title_taps.1 + 1 } else { 1 }, Instant::now());
                                 title_taps.1 == 3
@@ -782,7 +782,8 @@ fn app(respawned: bool) {
                             }
                         };
                         match hit {
-                            Some(Hit::ColourTitle) if tripled => {
+                            // (The first two clicks closed and reopened it.)
+                            Some(Hit::Title(Section::Colour)) if tripled => {
                                 cfg.rainbow = !cfg.rainbow;
                                 if cfg.rainbow {
                                     // Grey would hide it.
@@ -791,7 +792,7 @@ fn app(respawned: bool) {
                                 }
                                 cfg.save();
                             }
-                            Some(Hit::BrainTitle) if tripled => {
+                            Some(Hit::Title(Section::Brain)) if tripled => {
                                 cfg.nootropic = !cfg.nootropic;
                                 if cfg.nootropic {
                                     relight_in = 0.0;
@@ -802,7 +803,10 @@ fn app(respawned: bool) {
                                 }
                                 cfg.save();
                             }
-                            Some(Hit::ColourTitle | Hit::BrainTitle) => {}
+                            Some(Hit::Title(s)) => {
+                                cfg.collapsed[s as usize] = !cfg.collapsed[s as usize];
+                                cfg.save();
+                            }
                             Some(Hit::Shoot) => {
                                 let at = cursor();
                                 let target = shot_target
@@ -1252,7 +1256,7 @@ fn app(respawned: bool) {
                 let m = cursor();
                 let keyb = cfg.provider.needs_key();
                 let hover = panel_drag
-                    .or_else(|| ui::panel_hit(m.x as i32 - px0, m.y as i32 - py0, panel_tab, keyb, attachment.is_some(), font_px));
+                    .or_else(|| ui::panel_hit(m.x as i32 - px0, m.y as i32 - py0, panel_tab, keyb, attachment.is_some(), &cfg.collapsed, font_px));
                 let brain_line = match backend(&cfg) {
                     Ok(brain::Backend::Cli { model, .. }) if cfg.provider.needs_key() => {
                         format!("Brain: Claude plan ({model}), no key yet")
@@ -1292,6 +1296,7 @@ fn app(respawned: bool) {
                     }),
                     rainbow: cfg.rainbow,
                     nootropic: cfg.nootropic,
+                    collapsed: cfg.collapsed,
                     hover,
                 };
                 let (pw, ph) = ui::draw_panel(panel_pixels, panel_surface.cap, &view, font_px);

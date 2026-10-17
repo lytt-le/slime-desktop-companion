@@ -959,7 +959,7 @@ fn speech_bubble_renders() {
 fn settings_panel_renders_and_hits() {
     use crate::brain::{KeySource, SessionState};
     use crate::settings::{self, Settings};
-    use crate::ui::{chat_lines, draw_panel, panel_hit, panel_size, slider_at, Hit, PanelView, TAB_CHAT, TAB_LOOK};
+    use crate::ui::{chat_lines, draw_panel, panel_hit, panel_size, slider_at, Hit, PanelView, Section, SECTION_N, TAB_CHAT, TAB_LOOK};
     const TAB_SETTINGS: usize = 1;
     let chat: Vec<(bool, String)> = vec![
         (true, "what's a slime mold?".into()),
@@ -1011,6 +1011,7 @@ fn settings_panel_renders_and_hits() {
             swatch_on: settings::SWATCHES.iter().position(|&(h, v)| cfg.look[0] == h && cfg.look[1] == v),
             rainbow: cfg.rainbow,
             nootropic: cfg.nootropic,
+            collapsed: cfg.collapsed,
             hover,
         };
         draw_panel(&mut frame, W, &v, p);
@@ -1042,6 +1043,10 @@ fn settings_panel_renders_and_hits() {
     frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, None, &chat, None));
     cfg.nootropic = false;
     frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, None, &chat, None));
+    // Sections closed: Features on Settings (hovering Brain's title), Colour on Customisation.
+    cfg.collapsed = [true, false, true, false];
+    frames.push(view(&cfg, TAB_SETTINGS, None, &SessionState::Closed, Some(Hit::Title(Section::Brain)), &chat, None));
+    frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, None, &chat, None));
     for f in frames {
         sheet.frames.push(f[..W * H].to_vec());
         sheet.frames.push(f[W * H..].to_vec());
@@ -1049,54 +1054,66 @@ fn settings_panel_renders_and_hits() {
     sheet.save("panel");
 
     // Every control is where it's drawn.
-    let at = |tab: usize, x: usize, y: usize| panel_hit(x as i32 * p as i32, y as i32 * p as i32, tab, true, false, p);
+    let open = [false; SECTION_N];
+    let at_c = |tab: usize, collapsed: &[bool; SECTION_N], x: usize, y: usize| {
+        panel_hit(x as i32 * p as i32, y as i32 * p as i32, tab, true, false, collapsed, p)
+    };
+    let at = |tab: usize, x: usize, y: usize| at_c(tab, &open, x, y);
     assert_eq!(at(TAB_CHAT, 204, 5), Some(Hit::Close));
     assert_eq!(at(TAB_CHAT, 15, 20), Some(Hit::Tab(0)));
     assert_eq!(at(TAB_CHAT, 45, 20), Some(Hit::Tab(1)));
     assert_eq!(at(TAB_CHAT, 95, 20), Some(Hit::Tab(2)));
     assert_eq!(at(TAB_CHAT, 130, 20), None); // past the last tab
     assert_eq!(at(TAB_CHAT, 100, 100), None); // the log
-    assert_eq!(at(TAB_CHAT, 100, 180), None); // the input line
-    assert_eq!(at(TAB_CHAT, 100, 158), Some(Hit::Shoot));
-    assert_eq!(at(TAB_CHAT, 180, 196), Some(Hit::ClearChat));
-    assert_eq!(at(TAB_CHAT, 60, 196), None); // the brain line
-    assert_eq!(at(1, 180, 196), Some(Hit::Quit)); // only on the Chat tab
-    let with_shot = |x: usize, y: usize| panel_hit(x as i32 * 2, y as i32 * 2, TAB_CHAT, false, true, p);
-    assert_eq!(with_shot(100, 158), None); // the thumbnail and label
-    assert_eq!(with_shot(200, 158), Some(Hit::DropShot));
+    assert_eq!(at(TAB_CHAT, 100, 200), None); // the input line
+    assert_eq!(at(TAB_CHAT, 100, 178), Some(Hit::Shoot));
+    assert_eq!(at(TAB_CHAT, 180, 216), Some(Hit::ClearChat));
+    assert_eq!(at(TAB_CHAT, 60, 216), None); // the brain line
+    assert_eq!(at(1, 180, 216), Some(Hit::Quit)); // only on the Chat tab
+    let with_shot = |x: usize, y: usize| panel_hit(x as i32 * 2, y as i32 * 2, TAB_CHAT, false, true, &open, p);
+    assert_eq!(with_shot(100, 178), None); // the thumbnail and label
+    assert_eq!(with_shot(200, 178), Some(Hit::DropShot));
     const S: usize = TAB_SETTINGS;
-    assert_eq!(at(S, 100, 36), Some(Hit::Slider));
-    assert_eq!(at(S, 30, 49), Some(Hit::Jump));
-    assert_eq!(at(S, 30, 61), Some(Hit::Facts));
-    assert_eq!(at(S, 30, 73), Some(Hit::Idle));
-    assert_eq!(at(S, 30, 85), Some(Hit::Keepy));
-    assert_eq!(at(S, 62, 112), Some(Hit::ProviderPrev));
-    assert_eq!(at(S, 150, 112), Some(Hit::ProviderNext));
-    assert_eq!(at(S, 150, 125), Some(Hit::ModelNext));
-    assert_eq!(at(S, 30, 138), Some(Hit::Web));
-    assert_eq!(at(S, 140, 151), Some(Hit::PasteKey));
-    assert_eq!(at(S, 180, 151), Some(Hit::ClearKey));
-    assert_eq!(at(S, 100, 164), None); // status line
-    assert_eq!(at(S, 20, 196), Some(Hit::Reset));
-    assert_eq!(at(S, 190, 196), Some(Hit::Quit));
-    assert_eq!(panel_hit(140 * 2, 151 * 2, S, false, false, p), None); // no key buttons for the Claude plan
+    assert_eq!(at(S, 100, 35), Some(Hit::Title(Section::Features))); // the whole title row
+    assert_eq!(at(S, 30, 47), Some(Hit::Jump));
+    assert_eq!(at(S, 30, 59), Some(Hit::Facts));
+    assert_eq!(at(S, 30, 71), Some(Hit::Idle));
+    assert_eq!(at(S, 30, 83), Some(Hit::Keepy));
+    assert_eq!(at(S, 100, 97), Some(Hit::Title(Section::Brain)));
+    assert_eq!(at(S, 62, 109), Some(Hit::ProviderPrev));
+    assert_eq!(at(S, 150, 109), Some(Hit::ProviderNext));
+    assert_eq!(at(S, 150, 122), Some(Hit::ModelNext));
+    assert_eq!(at(S, 30, 135), Some(Hit::Web));
+    assert_eq!(at(S, 140, 148), Some(Hit::PasteKey));
+    assert_eq!(at(S, 180, 148), Some(Hit::ClearKey));
+    assert_eq!(at(S, 100, 161), None); // status line
+    assert_eq!(at(S, 20, 216), Some(Hit::Reset));
+    assert_eq!(at(S, 190, 216), Some(Hit::Quit));
+    assert_eq!(panel_hit(140 * 2, 148 * 2, S, false, false, &open, p), None); // no key buttons for the Claude plan
+    // A closed section shows only its title, and the rest moves up.
+    let shut = [true, false, true, false];
+    assert_eq!(at_c(S, &shut, 30, 47), Some(Hit::Title(Section::Brain)));
+    assert_eq!(at_c(S, &shut, 62, 61), Some(Hit::ProviderPrev));
+    assert_eq!(at_c(TAB_LOOK, &shut, 100, 50), Some(Hit::Title(Section::Colour)));
+    assert_eq!(at_c(TAB_LOOK, &shut, 100, 64), Some(Hit::Title(Section::Feel)));
+    assert_eq!(at_c(TAB_LOOK, &shut, 120, 76), Some(Hit::Tune(3)));
+    assert!(!(0..230).any(|y| at_c(TAB_LOOK, &shut, 120, y) == Some(Hit::Tune(0))), "a closed section's slider is still clickable");
     // The log shows the newest lines, with a thinking "..." while waiting.
     let lines = chat_lines(&chat, true);
     assert!(lines[0].1.starts_with("> what's") && lines.last().unwrap().1 == "...");
     let long: Vec<(bool, String)> = (0..30).map(|i| (i % 2 == 0, format!("message {i}"))).collect();
     let lines = chat_lines(&long, false);
     assert!(lines.len() <= 14 && lines.last().unwrap().1 == "message 29");
-    assert_eq!(at(TAB_LOOK, 10, 46), Some(Hit::Swatch(0)));
-    assert_eq!(at(TAB_LOOK, 200, 46), Some(Hit::Swatch(8)));
-    assert_eq!(at(TAB_LOOK, 120, 60), Some(Hit::Tune(0)));
-    assert_eq!(at(TAB_LOOK, 120, 84), Some(Hit::Tune(2)));
-    assert_eq!(at(TAB_LOOK, 120, 109), Some(Hit::Tune(3)));
-    assert_eq!(at(TAB_LOOK, 120, 181), Some(Hit::Tune(9)));
-    assert_eq!(at(TAB_LOOK, 100, 196), Some(Hit::ResetLook));
-    assert_eq!(at(TAB_LOOK, 100, 34), None); // Settings tab's controls are gone
-    assert_eq!(at(TAB_LOOK, 15, 34), Some(Hit::ColourTitle));
-    assert_eq!(at(S, 15, 99), Some(Hit::BrainTitle));
-    assert_eq!(at(S, 100, 99), None);
+    assert_eq!(at(TAB_LOOK, 100, 35), Some(Hit::Slider)); // size, now on Customisation
+    assert_eq!(at(TAB_LOOK, 100, 50), Some(Hit::Title(Section::Colour)));
+    assert_eq!(at(TAB_LOOK, 10, 63), Some(Hit::Swatch(0)));
+    assert_eq!(at(TAB_LOOK, 200, 63), Some(Hit::Swatch(8)));
+    assert_eq!(at(TAB_LOOK, 120, 77), Some(Hit::Tune(0)));
+    assert_eq!(at(TAB_LOOK, 120, 101), Some(Hit::Tune(2)));
+    assert_eq!(at(TAB_LOOK, 100, 115), Some(Hit::Title(Section::Feel)));
+    assert_eq!(at(TAB_LOOK, 120, 127), Some(Hit::Tune(3)));
+    assert_eq!(at(TAB_LOOK, 120, 199), Some(Hit::Tune(9)));
+    assert_eq!(at(TAB_LOOK, 100, 216), Some(Hit::ResetLook));
     // Sliders span their range and snap to the standard setting.
     assert_eq!(crate::slider_to_size(slider_at(Hit::Slider, 0, p)), crate::settings::MIN_SIZE);
     assert_eq!(crate::slider_to_size(slider_at(Hit::Slider, 10_000, p)), crate::settings::MAX_SIZE);
@@ -1643,6 +1660,7 @@ fn claude_code_reads_an_image() {
         swatch_on: None,
         rainbow: false,
         nootropic: false,
+        collapsed: [false; crate::ui::SECTION_N],
         hover: None,
     };
     draw_panel(&mut buf, pw, &v, p);
