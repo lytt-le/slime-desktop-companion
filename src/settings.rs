@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use super::brain::{data_dir, Provider};
 use super::draw::{Palette, BASE_HUE};
 use super::sim::Tuning;
+use super::ui::{SECTIONS, SECTION_N};
 
 pub const MIN_SIZE: f32 = 0.5;
 pub const MAX_SIZE: f32 = 2.5;
@@ -71,11 +72,13 @@ pub struct Settings {
     /// a row so far.
     pub keepy: bool,
     pub keepy_best: u32,
+    /// Panel sections closed with their titles (in `ui::SECTIONS` order).
+    pub collapsed: [bool; SECTION_N],
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { provider: Provider::ClaudePlan, models: [0; 3], size: 1.0, jump: true, facts: true, idle: true, web: true, look: LOOK_DEFAULT, rainbow: false, nootropic: false, keepy: false, keepy_best: 0 }
+        Settings { provider: Provider::ClaudePlan, models: [0; 3], size: 1.0, jump: true, facts: true, idle: true, web: true, look: LOOK_DEFAULT, rainbow: false, nootropic: false, keepy: false, keepy_best: 0, collapsed: [false; SECTION_N] }
     }
 }
 
@@ -145,6 +148,7 @@ impl Settings {
             "nootropic": self.nootropic,
             "keepy_uppies": self.keepy,
             "keepy_uppies_best": self.keepy_best,
+            "collapsed": SECTIONS.iter().zip(self.collapsed).filter(|s| s.1).map(|s| s.0.label()).collect::<Vec<_>>(),
             "look": LOOK.iter().zip(self.look).map(|(l, v)| (l.0.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
         })
     }
@@ -173,6 +177,11 @@ impl Settings {
         s.nootropic = v["nootropic"].as_bool().unwrap_or(s.nootropic);
         s.keepy = v["keepy_uppies"].as_bool().unwrap_or(s.keepy);
         s.keepy_best = v["keepy_uppies_best"].as_u64().map_or(s.keepy_best, |n| n.min(u32::MAX as u64) as u32);
+        if let Some(names) = v["collapsed"].as_array() {
+            for (i, sec) in SECTIONS.iter().enumerate() {
+                s.collapsed[i] = names.iter().any(|n| n.as_str() == Some(sec.label()));
+            }
+        }
         for (i, l) in LOOK.iter().enumerate() {
             if let Some(x) = v["look"][l.0].as_f64() {
                 s.look[i] = (x as f32).clamp(0.0, 1.0);
@@ -217,6 +226,7 @@ mod tests {
         s.nootropic = true;
         s.keepy = true;
         s.keepy_best = 17;
+        s.collapsed[1] = true;
         s.look[3] = 0.9;
         s.look[HUE] = 0.6;
         let back = Settings::from_json(&s.to_json());
