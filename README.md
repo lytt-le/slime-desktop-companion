@@ -6,7 +6,7 @@ A gooey pixel-art slime that lives on your Windows desktop. He sits on your wind
 
 - **Left-click + drag** the slime: pick him up; release to drop or fling him
 - **Left-click anywhere else**: he hops toward the click (toggle with *Jump to clicks*)
-- **Right-click while holding him** (left button still down): stick a drawing pin through him (a red pixel-art thumbtack, its needle buried in him). Let go and he stays pinned to that spot on the screen, dangling from the pin and dripping as if carried (no antics; if his monitor goes fullscreen he hides behind it). Grab him again to pull the pin out: it pings off and falls away.
+- **Right-click while holding him** (left button still down): stick a drawing pin through him (a red pixel-art pushpin with a round cap and a soft edge, its needle buried in him). Let go and he stays pinned to that spot on the screen, dangling from the pin and dripping as if carried (no antics; if his monitor goes fullscreen he hides behind it). Grab him again to pull the pin out: it pings off and falls away.
 - **Right-click** the slime or the tray icon: the **settings panel** below
 - **Tray icon → double-click**: reset
 

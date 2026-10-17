@@ -55,40 +55,51 @@ struct LoosePin {
 
 const PIN_FALL_FOR: f32 = 1.4;
 
-/// A drawing pin, pixelated from a photo (pin.png): domed cap at the top right, a narrow
-/// neck, a flared base, and the needle at the bottom left. D outline, S shade, R red,
-/// L lit, H glint, G/g needle.
+/// A drawing pin (after a pixel-art pushpin, recoloured red): round cap at the top
+/// right, a tilted base, the dark joint between them, and the needle at the bottom left.
+/// K soft edge, D/S/R/L/H deep shade to glint, G/g/n needle.
 #[rustfmt::skip]
-const PIN: [&str; 16] = [
-    "...........DLLDD..",
-    "..........DLLLLLD.",
-    ".........DSLHLLLD.",
-    ".........DSLHLLLLD",
-    ".........DSLLLLLLD",
-    ".........DSSLLLLLD",
-    "........DLRSSSLLD.",
-    "...D..DDLRSDSSSD..",
-    "..DLDDLLRSD.DDD...",
-    ".DLLLLRRSD........",
-    "DLLLRRRSD.........",
-    "DLRRRRSSD.........",
-    ".DRRRSSD..........",
-    ".DRRSSSD..........",
-    ".GDDSSD...........",
-    "G...DD............",
+const PIN: [&str; 24] = [
+    ".............KKKKKKK....",
+    "............KLLLLLLLK...",
+    "...........KLSRRRRRSLK..",
+    "..........KLSRRRRRRRSLK.",
+    ".........KSLRRRRRRRRRSLK",
+    ".........KSLRRRRRRRRRRLK",
+    ".........KSLRRRRRRRRRRLK",
+    ".........KSLRRRRRRRRRRLK",
+    "......KKKKSHRRRRRRRRRRLK",
+    ".....KRSDDKSHSRRRRRRRSLK",
+    "....KRSSDKLDSHSRRRRRSLK.",
+    "...KRSSSKHLKDSHHHHHHHK..",
+    "...KLRRDHLRRKDDDDDDDK...",
+    "...KLRRDLRRSSKKKKKKK....",
+    "...KLRRDRRSSDDKDK.......",
+    "...KLRRRDSSDDKDDK.......",
+    "...KHRRRRDKKKDDSK.......",
+    "....KHRRRRSSSDSDK.......",
+    "....gnLRRSSSSSDK........",
+    "...Gg.KLLRRRRRK.........",
+    "..Gg...KKKKKKK..........",
+    ".Gg.....................",
+    ".g......................",
+    "........................",
 ];
-/// Where the needle goes into him: the base's centre, just above the needle.
-const PIN_AT: (f32, f32) = (2.5, 12.5);
+/// Where the needle goes into him: the bottom of the base, just above the needle.
+const PIN_AT: (f32, f32) = (6.5, 18.5);
 
 fn pin_colour(c: u8) -> Option<[f32; 4]> {
     Some(match c {
-        b'D' => [110.0, 12.0, 22.0, 1.0],
-        b'S' => [168.0, 22.0, 34.0, 1.0],
-        b'R' => [214.0, 38.0, 48.0, 1.0],
-        b'L' => [240.0, 84.0, 92.0, 1.0],
-        b'H' => [255.0, 186.0, 188.0, 1.0],
-        b'G' => [210.0, 214.0, 222.0, 1.0],
-        b'g' => [120.0, 126.0, 138.0, 1.0],
+        // A soft dark-red edge rather than a black line.
+        b'K' => [150.0, 26.0, 38.0, 0.9],
+        b'D' => [112.0, 16.0, 26.0, 1.0],
+        b'S' => [172.0, 28.0, 38.0, 1.0],
+        b'R' => [222.0, 46.0, 52.0, 1.0],
+        b'L' => [246.0, 112.0, 112.0, 1.0],
+        b'H' => [255.0, 204.0, 198.0, 1.0],
+        b'G' => [222.0, 224.0, 228.0, 1.0],
+        b'g' => [150.0, 152.0, 158.0, 1.0],
+        b'n' => [92.0, 94.0, 100.0, 1.0],
         _ => return None,
     })
 }
@@ -490,11 +501,11 @@ impl Fx {
                     }
                     let Some(row) = PIN.get(v as usize) else { continue };
                     let Some(&ch) = row.as_bytes().get(u as usize) else { continue };
-                    if !needle && (ch == b'G' || ch == b'g') {
+                    if !needle && matches!(ch, b'G' | b'g' | b'n') {
                         continue;
                     }
                     if let Some(mut col) = pin_colour(ch) {
-                        col[3] = fade;
+                        col[3] *= fade;
                         put(ax + dx, ay + dy, col);
                     }
                 }
