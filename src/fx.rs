@@ -386,7 +386,7 @@ impl Fx {
         for z in &self.zs {
             grow(world.to_cell(z.p), 8.0);
         }
-        let pin_reach = (PIN.len().max(PIN[0].len()) + 2) as f32 * if world.scale > 1.4 { 2.0 } else { 1.0 };
+        let pin_reach = (PIN.len().max(PIN[0].len()) + 2) as f32;
         if let Some(p) = self.pin {
             grow(world.to_cell(p), pin_reach);
         }
@@ -484,9 +484,9 @@ impl Fx {
             }
         }
         // The drawing pin, pushed into him at the pin point (the needle's out of sight
-        // inside him); pins pulled out tumble down, needle and all. `k` cells per sprite
-        // pixel on a big slime.
-        let k = if world.scale > 1.4 { 2 } else { 1 };
+        // inside him); pins pulled out tumble down, needle and all. One cell per sprite
+        // pixel at every size.
+        let k = 1;
         let mut sprite = |at: V2, angle: f32, needle: bool, fade: f32| {
             let (s, c) = angle.sin_cos();
             let reach = (PIN.len().max(PIN[0].len()) as i32 + 2) * k;
