@@ -75,6 +75,29 @@ impl Canvas<'_> {
         self.rect(0, 1, w, h - 2, border);
         self.rect(1, 1, w - 2, h - 2, fill);
     }
+
+    /// Like `panel`, but with rounded corners (a stepped quarter-circle of radius 3).
+    fn rounded_panel(&mut self, w: usize, h: usize) {
+        // How far each row near the top/bottom edge is pulled in, outside and inside the outline.
+        const OUTER: [usize; 3] = [3, 1, 1];
+        const INNER: [usize; 3] = [2, 1, 0];
+        let inset = |steps: &[usize; 3], y: usize, h: usize| steps.get(y.min(h - 1 - y)).copied().unwrap_or(0);
+        let shadow = px((0, 0, 0), 0.28);
+        let border = px(BORDER, 1.0);
+        let fill = px(FILL, 0.97);
+        for y in 0..h {
+            let i = inset(&OUTER, y, h);
+            self.rect(i + 1, y + 1, w - 2 * i, 1, shadow);
+        }
+        for y in 0..h {
+            let i = inset(&OUTER, y, h);
+            self.rect(i, y, w - 2 * i, 1, border);
+        }
+        for y in 0..h - 2 {
+            let i = inset(&INNER, y, h - 2);
+            self.rect(i + 1, y + 1, w - 2 - 2 * i, 1, fill);
+        }
+    }
 }
 
 /// Size in screen pixels of a bubble holding `lines`.
@@ -93,7 +116,7 @@ pub fn draw_bubble(buf: &mut [u32], stride: usize, lines: &[String], shown: usiz
     cv.clear();
     let w = sw / p - 1;
     let h = sh / p - 1 - TAIL;
-    cv.panel(w, h);
+    cv.rounded_panel(w, h);
     // Tail: a stepped triangle hanging under the bubble.
     let tx = ((w as f32 * tail_at) as usize).clamp(4, w.saturating_sub(8));
     let border = px(BORDER, 1.0);
