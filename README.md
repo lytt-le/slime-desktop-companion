@@ -6,6 +6,7 @@ A gooey pixel-art slime that lives on your Windows desktop. He sits on your wind
 
 - **Left-click + drag** the slime: pick him up; release to drop or fling him
 - **Left-click anywhere else**: he hops toward the click (toggle with *Jump to clicks*)
+- **Right-click while holding him** (left button still down): stick a drawing pin through him. Let go and he stays pinned to that spot on the screen, dangling from the pin (no dripping, no antics; if his monitor goes fullscreen he hides behind it). Grab him again to pull the pin out: it pings off and falls away.
 - **Right-click** the slime or the tray icon: the **settings panel** below
 - **Tray icon → double-click**: reset
 
@@ -110,7 +111,7 @@ The exe runs itself as a worker under a tiny guardian. If the worker crashes, th
   - **Window edges**: one-way, judged by the body's lowest cell like a platformer's feet.
   - **Goo**: drips while carried or flying; round blobs thrown off by hard impacts (sized by the slime's radius and the impact speed, made just outside the surface from cells taken off it, and moved front-first so they fly whole); and a smear laid behind a slide, its thickness set by speed and size. Goo falls, sticks, fades, and is soaked back up on contact.
   - **Bubbles**: air cells that swap upward through the slime and pop at the surface.
-- `fx.rs`: moods and extras: cross brows, dizzy spirals, sleep and its Z's, the cigarette and its smoke (drawn in their own click-through window, since they stick out past the body).
+- `fx.rs`: moods and extras: cross brows, dizzy spirals, sleep and its Z's, the cigarette and its smoke, the drawing pin (drawn in their own click-through window, since they stick out past the body).
 - `brain.rs`: fun facts, and chat on a worker thread through the chosen provider: a persistent Claude Code session, or the Anthropic / DeepSeek APIs over WinHTTP. Short in-character replies; friendly messages for bad keys, sign-in, usage limits, rate limits, overload and refusals; web search (Claude Code's tools, Anthropic's server tools, or DeepSeek's Search/Fetch APIs run as functions); a speech queue that types replies out a page at a time.
 - `shot.rs`: "Ask about this page": finds the window in front, captures it (keeping the slime's windows out of the shot), scales it, encodes PNG/JPEG with GDI+, makes the thumbnail.
 - `settings.rs`: the panel's choices, saved as JSON, and how the Customisation sliders map onto the sim's `Tuning` and the renderer's `Palette` (the middle of every slider is the classic slime).

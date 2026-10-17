@@ -281,6 +281,8 @@ pub struct World {
     shake: f32,
     /// Added to the jelly's rest height (negative: lies lower, as when asleep).
     pub rest_bias: f32,
+    /// Pinned to the screen: held where the grab was, without anyone holding him.
+    pub pinned: bool,
 }
 
 /// Fractional window-ride offsets per platform id.
@@ -341,6 +343,7 @@ impl World {
             wall_hit: 0.0,
             shake: 0.0,
             rest_bias: 0.0,
+            pinned: false,
         }
     }
 
@@ -439,6 +442,7 @@ impl World {
         }
         self.base_count = (self.slime_count() as f32 / (self.scale * self.scale)) as usize;
         self.grab = None;
+        self.pinned = false;
     }
 
     pub fn clear_goo(&mut self) {
@@ -639,6 +643,7 @@ impl World {
     }
 
     pub fn release(&mut self, throw: V2) {
+        self.pinned = false;
         if self.grab.take().is_none() {
             return;
         }
@@ -1316,6 +1321,18 @@ impl World {
     }
 
     /// The hardest wall hit since last asked (cells per substep beyond a gentle touch).
+    /// Pins him where he's being held: he stays hanging there when let go.
+    pub fn pin(&mut self) -> bool {
+        self.pinned = self.grab.is_some();
+        self.pinned
+    }
+
+    /// Where the pin is (screen px), if he's pinned.
+    pub fn pin_point(&self) -> Option<V2> {
+        let g = self.grab.as_ref().filter(|_| self.pinned)?;
+        Some(self.to_screen(g.target))
+    }
+
     pub fn take_wall_hit(&mut self) -> f32 {
         std::mem::take(&mut self.wall_hit)
     }
@@ -1835,7 +1852,9 @@ impl World {
         let support = self.support();
         // Drips while carried or flying: small clumps, bigger on a bigger slime and when
         // it's moving faster.
-        let shed_rate = if self.grab.is_some() {
+        let shed_rate = if self.pinned {
+            0.0 // hanging still: nothing shaking loose
+        } else if self.grab.is_some() {
             3.0 + speed / 600.0
         } else if speed > 500.0 && support.is_none() {
             speed / 500.0

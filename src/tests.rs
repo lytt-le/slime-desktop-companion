@@ -755,36 +755,90 @@ fn notices_wall_hits_and_shaking() {
     }
 }
 
+/// A frame of the body with its effects layer (Z's, smoke, the pin) on top.
+fn capture_with_fx(w: &World, fx: &crate::fx::Fx, sheet: &mut Sheet) {
+    let mut frame = vec![0u32; W * H];
+    let full = (0, 0, w.w - 1, w.h - 1);
+    let mut eyes = Eyes::new(w);
+    eyes.update(w, V2::ZERO, FRAME, 0.5);
+    let mut face = eyes.blocks(w);
+    fx.style_eyes(&mut face);
+    draw_body(&mut frame, W, w, full, &face);
+    let mut layer = vec![0u32; 600 * 600];
+    if let Some((x, y, lw, lh)) = fx.draw(&mut layer, 600, 600, w) {
+        for yy in 0..lh {
+            for xx in 0..lw {
+                let (fx_, fy) = (x + xx as i32, y + yy as i32);
+                let s = layer[yy * 600 + xx];
+                let a = s >> 24;
+                if a > 0 && fx_ >= 0 && fy >= 0 && (fx_ as usize) < W && (fy as usize) < H {
+                    let d = &mut frame[fy as usize * W + fx_ as usize];
+                    let mix = |sc: u32, dc: u32| (sc + dc * (255 - a) / 255).min(255);
+                    *d = (mix(a, *d >> 24) << 24) | (mix(s >> 16 & 255, *d >> 16 & 255) << 16) | (mix(s >> 8 & 255, *d >> 8 & 255) << 8) | mix(s & 255, *d & 255);
+                }
+            }
+        }
+    }
+    sheet.frames.push(frame);
+}
+
+/// Pinned while held, he stays hanging on the pin when let go (no dripping), until
+/// grabbed again, when the pin pops out and falls away.
+#[test]
+fn pinned_to_the_screen() {
+    use crate::fx::Fx;
+    let mut w = world_at(v2(320.0, 330.0));
+    let mut sheet = Sheet::new();
+    run(&mut w, 120, &mut sheet, 0);
+    // Picked up by the top and lifted up to the middle of the screen.
+    let at = w.centroid() - v2(0.0, R0 * 0.5);
+    w.start_grab(at);
+    let pin_at = v2(400.0, 150.0);
+    for k in 1..=20 {
+        w.drag_to(at + (pin_at - at) * (k as f32 / 20.0));
+        w.step(FRAME);
+    }
+    assert!(w.pin());
+    // Let go (main.rs ignores the release while pinned) and wait.
+    let goo0 = w.ents.iter().filter(|e| e.kind == Kind::Goo).count();
+    let mut fx = Fx::new(3);
+    for f in 0..240 {
+        w.step(FRAME);
+        fx.pin = w.pin_point();
+        fx.update(FRAME, &w);
+        if f % 40 == 39 {
+            capture_with_fx(&w, &fx, &mut sheet);
+        }
+    }
+    let c = w.centroid();
+    let goo1 = w.ents.iter().filter(|e| e.kind == Kind::Goo).count();
+    eprintln!("PX pinned at {pin_at:?}: centroid {c:?}, goo {goo0} -> {goo1}");
+    assert!((c.x - pin_at.x).abs() < R0 && c.y > pin_at.y - R0 && c.y < pin_at.y + R0 * 2.0, "fell off the pin: {c:?}");
+    assert!(goo1 <= goo0, "dripped while pinned");
+    let p = w.pin_point().unwrap();
+    assert!((p - pin_at).len() < 4.0, "pin moved to {p:?}");
+    let mut layer = vec![0u32; 600 * 600];
+    assert!(fx.draw(&mut layer, 600, 600, &w).is_some(), "no pin drawn");
+    // Grabbed again: the pin pops out and falls away.
+    fx.pull_pin(p, w.scale);
+    w.pinned = false;
+    w.start_grab(w.centroid());
+    w.release(V2::ZERO);
+    assert!(!w.pinned && w.pin_point().is_none());
+    for _ in 0..120 {
+        w.step(FRAME);
+        fx.update(FRAME, &w);
+    }
+    assert!(!fx.visible(), "the pulled pin never went");
+    sheet.save("pinned");
+}
+
 /// His moods, drawn: cross brows, spinning dizzy eyes, asleep with Z's, smoking.
 #[test]
 fn moods_render() {
     use crate::fx::Fx;
     let mut sheet = Sheet::new();
-    let shot = |w: &World, fx: &Fx, sheet: &mut Sheet| {
-        let mut frame = vec![0u32; W * H];
-        let full = (0, 0, w.w - 1, w.h - 1);
-        let mut eyes = Eyes::new(w);
-        eyes.update(w, V2::ZERO, FRAME, 0.5);
-        let mut face = eyes.blocks(w);
-        fx.style_eyes(&mut face);
-        draw_body(&mut frame, W, w, full, &face);
-        let mut layer = vec![0u32; 600 * 600];
-        if let Some((x, y, lw, lh)) = fx.draw(&mut layer, 600, 600, w) {
-            for yy in 0..lh {
-                for xx in 0..lw {
-                    let (fx_, fy) = (x + xx as i32, y + yy as i32);
-                    let s = layer[yy * 600 + xx];
-                    let a = s >> 24;
-                    if a > 0 && fx_ >= 0 && fy >= 0 && (fx_ as usize) < W && (fy as usize) < H {
-                        let d = &mut frame[fy as usize * W + fx_ as usize];
-                        let mix = |sc: u32, dc: u32| (sc + dc * (255 - a) / 255).min(255);
-                        *d = (mix(a, *d >> 24) << 24) | (mix(s >> 16 & 255, *d >> 16 & 255) << 16) | (mix(s >> 8 & 255, *d >> 8 & 255) << 8) | mix(s & 255, *d & 255);
-                    }
-                }
-            }
-        }
-        sheet.frames.push(frame);
-    };
+    let shot = capture_with_fx;
     let mut w = world_at(v2(320.0, 330.0));
     run(&mut w, 150, &mut sheet, 0);
     let mut fx = Fx::new(5);

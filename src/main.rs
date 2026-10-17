@@ -37,7 +37,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
     GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
@@ -58,6 +58,8 @@ const MAX_QUESTION: usize = 400;
 enum Event {
     GrabStart,
     GrabEnd,
+    /// Right-clicked while held: pin him there.
+    Pin,
     Menu,
     Reset,
     Click(V2),
@@ -88,6 +90,8 @@ fn slider_to_size(t: f32) -> f32 {
 
 thread_local! {
     static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
+    /// The right button went down to pin him: its release mustn't open the panel.
+    static PINNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn push(e: Event) {
@@ -114,8 +118,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             push(Event::GrabEnd);
             0
         }
+        // Right-click while dragging him (he has the mouse captured): a pin.
+        WM_RBUTTONDOWN if GetCapture() == hwnd => {
+            PINNING.with(|p| p.set(true));
+            push(Event::Pin);
+            0
+        }
         WM_RBUTTONUP => {
-            push(Event::Menu);
+            if !PINNING.with(|p| p.replace(false)) {
+                push(Event::Menu);
+            }
             0
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
@@ -608,12 +620,24 @@ fn app(respawned: bool) {
                 match e {
                     Event::GrabStart => {
                         let p = cursor();
+                        // Grabbed again: the pin comes out.
+                        if let Some(at) = world.pin_point() {
+                            fx.pull_pin(at, world.scale);
+                            world.pinned = false;
+                        }
                         fx.wake();
                         fx.stub_out(&world);
                         idle_for = 0.0;
                         world.start_grab(p);
                         trail.clear();
                         trail.push_back((Instant::now(), p));
+                    }
+                    // Pinned: letting go leaves him hanging on the pin.
+                    Event::GrabEnd if world.pinned => {}
+                    Event::Pin => {
+                        if world.pin() {
+                            world.poke(-2.0);
+                        }
                     }
                     Event::GrabEnd => {
                         let now = Instant::now();
@@ -710,7 +734,9 @@ fn app(respawned: bool) {
                     Event::Menu => {
                         fx.wake();
                         idle_for = 0.0;
-                        world.release(V2::ZERO);
+                        if !world.pinned {
+                            world.release(V2::ZERO);
+                        }
                         let (pw, ph) = ui::panel_size(font_px);
                         panel_at = Some(panel_origin(cursor(), pw as i32, ph as i32));
                         panel_note = None;
@@ -880,7 +906,7 @@ fn app(respawned: bool) {
             // free, or if there isn't one, sits behind it, out of sight, until it's gone.
             let mut hide = None;
             match fullscreen_at(&scan, world.centroid()) {
-                Some(fs) if world.grab.is_none() => {
+                Some(fs) if world.grab.is_none() || world.pinned => {
                     let c = world.centroid();
                     let free = (0..scan.monitors.len())
                         .filter(|&m| !scan.fullscreen.iter().any(|f| f.1 == m))
@@ -890,6 +916,8 @@ fn app(respawned: bool) {
                             d.len() as i64
                         });
                     match free {
+                        // (Pinned, he can't leap: he hides behind it.)
+                        Some(_) if world.pinned => hide = Some(fs),
                         Some(m) => {
                             leap_wait -= dt;
                             if leap_wait <= 0.0 && world.resting() {
@@ -925,7 +953,7 @@ fn app(respawned: bool) {
             }
 
             let mouse = cursor();
-            if world.grab.is_some() {
+            if world.grab.is_some() && !world.pinned {
                 world.drag_to(mouse);
                 trail.push_back((now, mouse));
                 while trail.len() > 2 && now.duration_since(trail[0].0).as_secs_f32() > 0.15 {
@@ -942,7 +970,8 @@ fn app(respawned: bool) {
             // Moods: cross after a hard knock into a wall, dizzy after a shaking (reeling
             // once he's put down), lying low while asleep, waking with a stretch.
             fx.hit_wall(world.take_wall_hit());
-            if world.grab.is_some() {
+            fx.pin = world.pin_point();
+            if world.grab.is_some() && !world.pinned {
                 fx.shaken(world.shake());
             } else {
                 world.sway(fx.sway(dt));
@@ -1199,7 +1228,7 @@ fn app(respawned: bool) {
                 }
             }
 
-            if world.grab.is_some() || world.velocity().len() > 15.0 || world.antic().is_some() || glance.0 > 0.0 || fx.visible() || fx.dizzy > 0.0 {
+            if (world.grab.is_some() && !world.pinned) || world.velocity().len() > 15.0 || world.antic().is_some() || glance.0 > 0.0 || fx.animating() || fx.dizzy > 0.0 {
                 calm_for = 0.0;
             } else {
                 calm_for += dt;

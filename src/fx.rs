@@ -44,6 +44,17 @@ struct Zee {
     phase: f32,
 }
 
+/// A pin pulled out: it springs off and tumbles away (screen px, px/s, radians).
+struct LoosePin {
+    p: V2,
+    v: V2,
+    angle: f32,
+    spin: f32,
+    age: f32,
+}
+
+const PIN_FALL_FOR: f32 = 1.4;
+
 struct Cigarette {
     /// Seconds left, which side it sticks out of (-1 left, 1 right).
     left: f32,
@@ -66,6 +77,9 @@ pub struct Fx {
     z_in: f32,
     clock: f32,
     rng: u32,
+    /// Where he's pinned to the screen (screen px), and pins on their way down.
+    pub pin: Option<V2>,
+    loose: Vec<LoosePin>,
 }
 
 /// The cigarette's cells (cell coords, colour) and where its glowing tip is, for a
@@ -78,7 +92,7 @@ struct CigCells {
 
 impl Fx {
     pub fn new(seed: u32) -> Fx {
-        Fx { angry: 0.0, dizzy: 0.0, asleep: None, cig: None, zs: Vec::new(), smoke: Vec::new(), z_in: 0.5, clock: 0.0, rng: seed | 1 }
+        Fx { angry: 0.0, dizzy: 0.0, asleep: None, cig: None, zs: Vec::new(), smoke: Vec::new(), z_in: 0.5, clock: 0.0, rng: seed | 1, pin: None, loose: Vec::new() }
     }
 
     fn rand(&mut self) -> f32 {
@@ -102,6 +116,14 @@ impl Fx {
             self.dizzy = DIZZY_FOR;
             self.wake();
         }
+    }
+
+    /// The pin comes out (grabbed again): it springs off and falls away.
+    pub fn pull_pin(&mut self, at: V2, scale: f32) {
+        let v = v2((self.rand() - 0.5) * 300.0, -(250.0 + self.rand() * 150.0)) * scale.max(0.5);
+        let spin = (self.rand() - 0.5) * 24.0;
+        self.loose.push(LoosePin { p: at, v, angle: -1.2, spin, age: 0.0 });
+        self.pin = None;
     }
 
     pub fn fall_asleep(&mut self, seconds: f32) {
@@ -270,11 +292,23 @@ impl Fx {
             s.v.y -= 6.0 * scale * dt;
         }
         self.smoke.retain(|s| s.age < s.life);
+        for l in &mut self.loose {
+            l.age += dt;
+            l.v.y += 2400.0 * scale * dt;
+            l.p += l.v * dt;
+            l.angle += l.spin * dt;
+        }
+        self.loose.retain(|l| l.age < PIN_FALL_FOR);
+    }
+
+    /// Anything moving (a pin just sitting there isn't).
+    pub fn animating(&self) -> bool {
+        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || !self.loose.is_empty()
     }
 
     /// Anything to draw in the effects window.
     pub fn visible(&self) -> bool {
-        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty()
+        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || self.pin.is_some() || !self.loose.is_empty()
     }
 
     /// Draws Z's, the cigarette and smoke into `buf` (`stride` px wide, `rows` tall).
@@ -302,6 +336,12 @@ impl Fx {
         }
         for z in &self.zs {
             grow(world.to_cell(z.p), 8.0);
+        }
+        if let Some(p) = self.pin {
+            grow(world.to_cell(p), 6.0);
+        }
+        for l in &self.loose {
+            grow(world.to_cell(l.p), 8.0);
         }
         if lo.x > hi.x {
             return None;
@@ -389,6 +429,54 @@ impl Fx {
                                 put(x, y, [235.0, 240.0, 255.0, alpha]);
                             }
                         }
+                    }
+                }
+            }
+        }
+        // The drawing pin: a round red head pushed into him, with a shine and a shadow.
+        let k = if world.scale > 1.4 { 2.0 } else { 1.0 };
+        if let Some(p) = self.pin {
+            let c = world.to_cell(p);
+            let r = 3.6 * k;
+            for y in (c.y - r - 1.0).floor() as i32..=(c.y + r + 2.0).ceil() as i32 {
+                for x in (c.x - r - 1.0).floor() as i32..=(c.x + r + 2.0).ceil() as i32 {
+                    let d = v2(x as f32 + 0.5 - c.x, y as f32 + 0.5 - c.y);
+                    let shadow = (d - v2(k, k)).len();
+                    if d.len() <= r {
+                        // A domed head: lit from the top left, a darker lip below.
+                        let rim = d.len() > r - 1.0;
+                        let col = if (d - v2(-0.38 * r, -0.38 * r)).len() < 0.22 * r + 0.4 {
+                            [255.0, 220.0, 220.0, 1.0] // glint
+                        } else if rim && d.x + d.y > -0.3 * r {
+                            [120.0, 14.0, 26.0, 1.0]
+                        } else if rim {
+                            [180.0, 30.0, 42.0, 1.0]
+                        } else if d.x + d.y < -0.2 * r {
+                            [240.0, 74.0, 84.0, 1.0]
+                        } else {
+                            [214.0, 38.0, 50.0, 1.0]
+                        };
+                        put(x, y, col);
+                    } else if shadow <= r {
+                        put(x, y, [10.0, 30.0, 12.0, 0.35]);
+                    }
+                }
+            }
+        }
+        // Pins pulled out: a little red head and a steel needle, tumbling down.
+        for l in &self.loose {
+            let fade = 1.0 - (l.age / PIN_FALL_FOR - 0.7).max(0.0) / 0.3;
+            let c = world.to_cell(l.p);
+            let dir = v2(l.angle.cos(), l.angle.sin());
+            for i in 0..(4.0 * k) as i32 + 1 {
+                let q = c + dir * (i as f32 + 1.5 * k);
+                put(q.x.floor() as i32, q.y.floor() as i32, [190.0, 196.0, 205.0, fade]);
+            }
+            let r = 1.6 * k;
+            for y in (c.y - r).floor() as i32..=(c.y + r).ceil() as i32 {
+                for x in (c.x - r).floor() as i32..=(c.x + r).ceil() as i32 {
+                    if v2(x as f32 + 0.5 - c.x, y as f32 + 0.5 - c.y).len() <= r {
+                        put(x, y, [222.0, 44.0, 56.0, fade]);
                     }
                 }
             }
