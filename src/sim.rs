@@ -77,8 +77,8 @@ const FRICTION: f32 = 0.25;
 const MAX_STEP: f32 = 12.0;
 /// Keepy uppies: how high a bounce off the cursor sends him (body radii), and how much
 /// of that speed goes sideways when the cursor catches him right at the edge.
-const KEEPY_APEX: f32 = 4.0;
-const KEEPY_SIDE: f32 = 0.35;
+const KEEPY_APEX: f32 = 5.0;
+const KEEPY_SIDE: f32 = 0.6;
 /// Cells further than this many radii from the body drop off as goo.
 const DETACH: f32 = 2.4;
 const GOO_LIFE: (f32, f32) = (5.0, 8.0);
