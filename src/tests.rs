@@ -962,6 +962,7 @@ fn settings_panel_renders_and_hits() {
             look_normal: settings::LOOK_DEFAULT,
             swatches: settings::swatch_colours(),
             swatch_on: settings::SWATCHES.iter().position(|&(h, v)| cfg.look[0] == h && cfg.look[1] == v),
+            rainbow: cfg.rainbow,
             nootropic: cfg.nootropic,
             hover,
         };
@@ -988,6 +989,10 @@ fn settings_panel_renders_and_hits() {
     frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, Some(Hit::Tune(4)), &chat, None));
     cfg.nootropic = true;
     frames.push(view(&cfg, TAB_SETTINGS, None, &SessionState::Closed, None, &chat, None));
+    cfg.rainbow = true;
+    frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, None, &chat, None));
+    cfg.nootropic = false;
+    frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, None, &chat, None));
     for f in frames {
         sheet.frames.push(f[..W * H].to_vec());
         sheet.frames.push(f[W * H..].to_vec());
@@ -1581,6 +1586,7 @@ fn claude_code_reads_an_image() {
         look_normal: crate::settings::LOOK_DEFAULT,
         swatches: crate::settings::swatch_colours(),
         swatch_on: None,
+        rainbow: false,
         nootropic: false,
         hover: None,
     };

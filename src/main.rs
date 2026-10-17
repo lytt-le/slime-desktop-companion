@@ -1240,6 +1240,7 @@ fn app(respawned: bool) {
                     swatch_on: settings::SWATCHES.iter().position(|&(h, v)| {
                         !cfg.rainbow && (cfg.look[settings::HUE] - h).abs() < 0.004 && (cfg.look[settings::VIVID] - v).abs() < 0.004
                     }),
+                    rainbow: cfg.rainbow,
                     nootropic: cfg.nootropic,
                     hover,
                 };

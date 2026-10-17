@@ -196,7 +196,8 @@ pub struct PanelView<'a> {
     /// Colour presets, and which one matches the current colour.
     pub swatches: [Rgb; SWATCH_N],
     pub swatch_on: Option<usize>,
-    /// Nootropic mode: a banner across the header.
+    /// Easter eggs on: banners across the header.
+    pub rainbow: bool,
     pub nootropic: bool,
     pub hover: Option<Hit>,
 }
@@ -262,6 +263,8 @@ const TRACK: Rgb = (150, 180, 150);
 const TAB_OFF: Rgb = (206, 228, 196);
 const BANNER: Rgb = (255, 200, 60);
 const BANNER_TEXT: Rgb = (90, 40, 10);
+const RAINBOW_LABEL: &str = "RAINBOW MODE";
+const NOOTROPIC_LABEL: &str = "NOOTROPIC MODE";
 
 /// Left edge of text column `c`.
 const fn col(c: usize) -> usize {
@@ -498,12 +501,33 @@ pub fn draw_panel(buf: &mut [u32], stride: usize, v: &PanelView, p: usize) -> (u
         cv.rect(PANEL_W - 15, 1, 14, HEADER_H - 1, px(PROMPT, 1.0));
     }
     cv.text(PANEL_W - PAD - GLYPH_W - 2, 3, "x", FILL);
-    if v.nootropic {
-        let label = "NOOTROPIC MODE";
-        let w = text_width(label) + 7;
-        let x = (PANEL_W - w) / 2;
-        cv.boxed(x, 2, w, HEADER_H - 2, BANNER);
-        cv.text(x + 4, 3, label, BANNER_TEXT);
+    // Easter egg banners, side by side, centred between the title and the close button.
+    let banners: Vec<&str> = [(v.rainbow, RAINBOW_LABEL), (v.nootropic, NOOTROPIC_LABEL)]
+        .into_iter()
+        .filter_map(|(on, l)| on.then_some(l))
+        .collect();
+    if !banners.is_empty() {
+        let width = |l: &str| text_width(l) + 7;
+        let total = banners.iter().map(|l| width(l)).sum::<usize>() + 2 * (banners.len() - 1);
+        let (left, right) = (PAD + text_width("SLIME") + 3, PANEL_W - 16);
+        let mut x = left + (right - left).saturating_sub(total) / 2;
+        for label in banners {
+            let w = width(label);
+            if label == RAINBOW_LABEL {
+                // White, with each letter a step further round the colour wheel.
+                cv.boxed(x, 2, w, HEADER_H - 2, FILL);
+                let mut pen = x + 4;
+                for (i, ch) in label.chars().enumerate() {
+                    let c = super::draw::hue_rgb(i as f32 / label.len() as f32, 0.85, 0.42);
+                    cv.text(pen, 3, &ch.to_string(), rgb(c));
+                    pen += advance(ch);
+                }
+            } else {
+                cv.boxed(x, 2, w, HEADER_H - 2, BANNER);
+                cv.text(x + 4, 3, label, BANNER_TEXT);
+            }
+            x += w + 2;
+        }
     }
     cv.tabs(v.tab, v.hover);
     match v.tab {
