@@ -1852,9 +1852,7 @@ impl World {
         let support = self.support();
         // Drips while carried or flying: small clumps, bigger on a bigger slime and when
         // it's moving faster.
-        let shed_rate = if self.pinned {
-            0.0 // hanging still: nothing shaking loose
-        } else if self.grab.is_some() {
+        let shed_rate = if self.grab.is_some() {
             3.0 + speed / 600.0
         } else if speed > 500.0 && support.is_none() {
             speed / 500.0

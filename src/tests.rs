@@ -782,8 +782,8 @@ fn capture_with_fx(w: &World, fx: &crate::fx::Fx, sheet: &mut Sheet) {
     sheet.frames.push(frame);
 }
 
-/// Pinned while held, he stays hanging on the pin when let go (no dripping), until
-/// grabbed again, when the pin pops out and falls away.
+/// Pinned while held, he stays hanging on the pin when let go (dripping, as when carried,
+/// without draining away), until grabbed again, when the pin pops out and falls away.
 #[test]
 fn pinned_to_the_screen() {
     use crate::fx::Fx;
@@ -800,21 +800,23 @@ fn pinned_to_the_screen() {
     }
     assert!(w.pin());
     // Let go (main.rs ignores the release while pinned) and wait.
-    let goo0 = w.ents.iter().filter(|e| e.kind == Kind::Goo).count();
+    let start = w.slime_count();
     let mut fx = Fx::new(3);
-    for f in 0..240 {
+    let mut dripped = 0;
+    for f in 0..1200 {
+        dripped = dripped.max(w.ents.iter().filter(|e| e.kind == Kind::Goo).count());
         w.step(FRAME);
         fx.pin = w.pin_point();
         fx.update(FRAME, &w);
-        if f % 40 == 39 {
+        if f % 200 == 199 {
             capture_with_fx(&w, &fx, &mut sheet);
         }
     }
     let c = w.centroid();
-    let goo1 = w.ents.iter().filter(|e| e.kind == Kind::Goo).count();
-    eprintln!("PX pinned at {pin_at:?}: centroid {c:?}, goo {goo0} -> {goo1}");
+    eprintln!("PX pinned at {pin_at:?}: centroid {c:?}, up to {dripped} goo cells, slime {start} -> {}", w.slime_count());
     assert!((c.x - pin_at.x).abs() < R0 && c.y > pin_at.y - R0 && c.y < pin_at.y + R0 * 2.0, "fell off the pin: {c:?}");
-    assert!(goo1 <= goo0, "dripped while pinned");
+    assert!(dripped > 0, "didn't drip while pinned");
+    assert!(w.slime_count() * 10 > start * 8, "drained away: {} of {start}", w.slime_count());
     let p = w.pin_point().unwrap();
     assert!((p - pin_at).len() < 4.0, "pin moved to {p:?}");
     let mut layer = vec![0u32; 600 * 600];
