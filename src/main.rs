@@ -54,6 +54,10 @@ use ui::Hit;
 const WM_TRAY: u32 = WM_APP + 1;
 /// Longest question the chat box accepts (characters).
 const MAX_QUESTION: usize = 400;
+/// Easter eggs: the most seconds between clicks that still count as a triple click, and
+/// how long a rainbow slime takes to go once round the colour wheel.
+const TRIPLE_GAP: f32 = 0.5;
+const RAINBOW_LAP: f32 = 6.0;
 
 enum Event {
     GrabStart,
@@ -571,6 +575,10 @@ fn app(respawned: bool) {
         let mut panel_drag: Option<Hit> = None;
         let mut panel_note: Option<(String, f32)> = None;
         let mut panel_show = false;
+        // Easter eggs: quick clicks on a section title (which, how many, when the last
+        // was), and a moment's pause before nootropic mode lights another cigarette.
+        let mut title_taps: (Option<Hit>, u32, Instant) = (None, 0, Instant::now());
+        let mut relight_in = 0.0f32;
         // The current provider's key (re-read when it may have changed).
         let mut key_cache: Option<Option<(String, brain::KeySource)>> = None;
         let mut greeted = false;
@@ -754,7 +762,40 @@ fn app(respawned: bool) {
                     }
                     Event::PanelDown(x, y) if panel_at.is_some() => {
                         let note = |s: &str| Some((s.to_string(), 4.0f32));
-                        match ui::panel_hit(x, y, panel_tab, cfg.provider.needs_key(), attachment.is_some(), font_px) {
+                        let hit = ui::panel_hit(x, y, panel_tab, cfg.provider.needs_key(), attachment.is_some(), font_px);
+                        let tripled = match hit {
+                            Some(h @ (Hit::ColourTitle | Hit::BrainTitle)) => {
+                                let quick = title_taps.0 == Some(h) && title_taps.2.elapsed().as_secs_f32() < TRIPLE_GAP;
+                                title_taps = (Some(h), if quick { title_taps.1 + 1 } else { 1 }, Instant::now());
+                                title_taps.1 == 3
+                            }
+                            _ => {
+                                title_taps.0 = None;
+                                false
+                            }
+                        };
+                        match hit {
+                            Some(Hit::ColourTitle) if tripled => {
+                                cfg.rainbow = !cfg.rainbow;
+                                if cfg.rainbow {
+                                    // Grey would hide it.
+                                    cfg.look[settings::VIVID] = cfg.look[settings::VIVID].max(0.5);
+                                    speech.say("Ooh! I'm every colour at once!");
+                                }
+                                cfg.save();
+                            }
+                            Some(Hit::BrainTitle) if tripled => {
+                                cfg.nootropic = !cfg.nootropic;
+                                if cfg.nootropic {
+                                    relight_in = 0.0;
+                                    speech.say("My brain feels... enormous.");
+                                } else {
+                                    fx.stub_out(&world);
+                                    speech.say("Back to my usual brainless self.");
+                                }
+                                cfg.save();
+                            }
+                            Some(Hit::ColourTitle | Hit::BrainTitle) => {}
                             Some(Hit::Shoot) => {
                                 let at = cursor();
                                 let target = shot_target
@@ -775,10 +816,12 @@ fn app(respawned: bool) {
                             Some(Hit::Tab(i)) => panel_tab = i,
                             Some(Hit::Swatch(i)) => {
                                 (cfg.look[settings::HUE], cfg.look[settings::VIVID]) = settings::SWATCHES[i];
+                                cfg.rainbow = false;
                                 cfg.save();
                             }
                             Some(Hit::ResetLook) => {
                                 cfg.look = settings::LOOK_DEFAULT;
+                                cfg.rainbow = false;
                                 cfg.save();
                             }
                             Some(Hit::Close) => close_panel = true,
@@ -960,7 +1003,11 @@ fn app(respawned: bool) {
                     trail.pop_front();
                 }
             }
-            // Customisation: colours and feel follow the settings live.
+            // Customisation: colours and feel follow the settings live (a rainbow slime's
+            // hue slides round the wheel, knob and all).
+            if cfg.rainbow {
+                cfg.look[settings::HUE] = (cfg.look[settings::HUE] + dt / RAINBOW_LAP).rem_euclid(1.0);
+            }
             world.tune = cfg.tuning();
             world.palette = cfg.palette();
             while acc >= FRAME {
@@ -981,6 +1028,14 @@ fn app(respawned: bool) {
             fx.update(dt, &world);
             if was_asleep && !fx.asleep() {
                 world.start_antic(Antic::Stretch);
+            }
+            // Nootropic mode: a fresh cigarette shortly after each one is knocked away.
+            if cfg.nootropic && !fx.smoking() && !fx.asleep() && (world.grab.is_none() || world.pinned) {
+                relight_in -= dt;
+                if relight_in <= 0.0 {
+                    relight_in = 1.5;
+                    fx.light_up(f32::INFINITY, if rng.next() < 0.5 { -1.0 } else { 1.0 });
+                }
             }
             idle_for += dt;
             // Safety net: if he's somehow off every screen, or mostly gone, bring him back.
@@ -1183,8 +1238,9 @@ fn app(respawned: bool) {
                     look_normal: settings::LOOK_DEFAULT,
                     swatches: settings::swatch_colours(),
                     swatch_on: settings::SWATCHES.iter().position(|&(h, v)| {
-                        (cfg.look[settings::HUE] - h).abs() < 0.004 && (cfg.look[settings::VIVID] - v).abs() < 0.004
+                        !cfg.rainbow && (cfg.look[settings::HUE] - h).abs() < 0.004 && (cfg.look[settings::VIVID] - v).abs() < 0.004
                     }),
+                    nootropic: cfg.nootropic,
                     hover,
                 };
                 let (pw, ph) = ui::draw_panel(panel_pixels, panel_surface.cap, &view, font_px);
@@ -1254,6 +1310,9 @@ fn set_slider(cfg: &mut Settings, h: Hit, t: f32) {
     match h {
         Hit::Slider => cfg.size = slider_to_size(t),
         Hit::Tune(i) => {
+            if i == settings::HUE {
+                cfg.rainbow = false;
+            }
             let normal = settings::LOOK_DEFAULT[i];
             cfg.look[i] = if (t - normal).abs() < 0.025 { normal } else { t };
         }

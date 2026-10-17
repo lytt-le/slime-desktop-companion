@@ -145,11 +145,15 @@ pub enum Hit {
     ClearKey,
     Reset,
     Quit,
+    /// The "Brain" title (three quick clicks: nootropic mode).
+    BrainTitle,
     // Customisation tab.
     Swatch(usize),
     /// One of the Customisation sliders.
     Tune(usize),
     ResetLook,
+    /// The "Colour" title (three quick clicks: a rainbow slime).
+    ColourTitle,
 }
 
 pub const TABS: [&str; 3] = ["Chat", "Settings", "Customisation"];
@@ -192,6 +196,8 @@ pub struct PanelView<'a> {
     /// Colour presets, and which one matches the current colour.
     pub swatches: [Rgb; SWATCH_N],
     pub swatch_on: Option<usize>,
+    /// Nootropic mode: a banner across the header.
+    pub nootropic: bool,
     pub hover: Option<Hit>,
 }
 
@@ -254,6 +260,8 @@ const BUTTON: Rgb = (226, 244, 214);
 const HOVER: Rgb = (196, 232, 178);
 const TRACK: Rgb = (150, 180, 150);
 const TAB_OFF: Rgb = (206, 228, 196);
+const BANNER: Rgb = (255, 200, 60);
+const BANNER_TEXT: Rgb = (90, 40, 10);
 
 /// Left edge of text column `c`.
 const fn col(c: usize) -> usize {
@@ -267,6 +275,11 @@ fn tune_row(i: usize) -> usize {
     } else {
         ROW_FEEL + 12 + 12 * (i - COLOUR_SLIDERS)
     }
+}
+
+/// Where a divider's title sits: (x, y, w, h).
+fn title_rect(y: usize, label: &str) -> (usize, usize, usize, usize) {
+    (PAD - 1, y - 2, text_width(label) + 2, GLYPH_H + 3)
 }
 
 /// Left edge and width of tab `i`.
@@ -298,6 +311,8 @@ fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool) -> Vec<(Hit, usize,
         return v;
     }
     if tab == TAB_LOOK {
+        let (x, y, w, h) = title_rect(ROW_COLOUR, "Colour");
+        v.push((Hit::ColourTitle, x, y, w, h));
         for i in 0..SWATCH_N {
             v.push((Hit::Swatch(i), PAD - 1 + i * (SWATCH_W + 2), ROW_SWATCHES, SWATCH_W, 11));
         }
@@ -320,6 +335,8 @@ fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool) -> Vec<(Hit, usize,
         (Hit::Reset, PAD - 1, ROW_BUTTONS - 2, 13 * ADVANCE, GLYPH_H + 4),
         (Hit::Quit, col(PANEL_COLS - 8) - 1, ROW_BUTTONS - 2, 8 * ADVANCE + 1, GLYPH_H + 4),
     ]);
+    let (x, y, w, h) = title_rect(ROW_BRAIN, "Brain");
+    v.push((Hit::BrainTitle, x, y, w, h));
     if key_buttons {
         v.push((Hit::PasteKey, col(21) - 3, ROW_KEY - 2, 5 * ADVANCE + 5, GLYPH_H + 4));
         v.push((Hit::ClearKey, col(28) - 3, ROW_KEY - 2, 5 * ADVANCE + 5, GLYPH_H + 4));
@@ -481,6 +498,13 @@ pub fn draw_panel(buf: &mut [u32], stride: usize, v: &PanelView, p: usize) -> (u
         cv.rect(PANEL_W - 15, 1, 14, HEADER_H - 1, px(PROMPT, 1.0));
     }
     cv.text(PANEL_W - PAD - GLYPH_W - 2, 3, "x", FILL);
+    if v.nootropic {
+        let label = "NOOTROPIC MODE";
+        let w = text_width(label) + 7;
+        let x = (PANEL_W - w) / 2;
+        cv.boxed(x, 2, w, HEADER_H - 2, BANNER);
+        cv.text(x + 4, 3, label, BANNER_TEXT);
+    }
     cv.tabs(v.tab, v.hover);
     match v.tab {
         TAB_CHAT => draw_chat_tab(&mut cv, v),

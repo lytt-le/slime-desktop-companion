@@ -62,11 +62,16 @@ pub struct Settings {
     pub web: bool,
     /// Customisation slider positions, in `LOOK` order.
     pub look: [f32; 10],
+    /// Easter eggs: his colour slides round the wheel (three clicks on "Colour", until
+    /// another colour is picked), and he never puts the cigarette down (three clicks on
+    /// "Brain").
+    pub rainbow: bool,
+    pub nootropic: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { provider: Provider::ClaudePlan, models: [0; 3], size: 1.0, jump: true, facts: true, idle: true, web: true, look: LOOK_DEFAULT }
+        Settings { provider: Provider::ClaudePlan, models: [0; 3], size: 1.0, jump: true, facts: true, idle: true, web: true, look: LOOK_DEFAULT, rainbow: false, nootropic: false }
     }
 }
 
@@ -132,6 +137,8 @@ impl Settings {
             "fun_facts": self.facts,
             "idle_antics": self.idle,
             "web_search": self.web,
+            "rainbow": self.rainbow,
+            "nootropic": self.nootropic,
             "look": LOOK.iter().zip(self.look).map(|(l, v)| (l.0.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
         })
     }
@@ -156,6 +163,8 @@ impl Settings {
         s.facts = v["fun_facts"].as_bool().unwrap_or(s.facts);
         s.idle = v["idle_antics"].as_bool().unwrap_or(s.idle);
         s.web = v["web_search"].as_bool().unwrap_or(s.web);
+        s.rainbow = v["rainbow"].as_bool().unwrap_or(s.rainbow);
+        s.nootropic = v["nootropic"].as_bool().unwrap_or(s.nootropic);
         for (i, l) in LOOK.iter().enumerate() {
             if let Some(x) = v["look"][l.0].as_f64() {
                 s.look[i] = (x as f32).clamp(0.0, 1.0);
@@ -196,6 +205,8 @@ mod tests {
         s.facts = false;
         s.idle = false;
         s.web = false;
+        s.rainbow = true;
+        s.nootropic = true;
         s.look[3] = 0.9;
         s.look[HUE] = 0.6;
         let back = Settings::from_json(&s.to_json());

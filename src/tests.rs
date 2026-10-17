@@ -962,6 +962,7 @@ fn settings_panel_renders_and_hits() {
             look_normal: settings::LOOK_DEFAULT,
             swatches: settings::swatch_colours(),
             swatch_on: settings::SWATCHES.iter().position(|&(h, v)| cfg.look[0] == h && cfg.look[1] == v),
+            nootropic: cfg.nootropic,
             hover,
         };
         draw_panel(&mut frame, W, &v, p);
@@ -985,6 +986,8 @@ fn settings_panel_renders_and_hits() {
     cfg.look[3] = 0.85;
     cfg.look[5] = 0.1;
     frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, Some(Hit::Tune(4)), &chat, None));
+    cfg.nootropic = true;
+    frames.push(view(&cfg, TAB_SETTINGS, None, &SessionState::Closed, None, &chat, None));
     for f in frames {
         sheet.frames.push(f[..W * H].to_vec());
         sheet.frames.push(f[W * H..].to_vec());
@@ -1033,6 +1036,9 @@ fn settings_panel_renders_and_hits() {
     assert_eq!(at(TAB_LOOK, 120, 181), Some(Hit::Tune(9)));
     assert_eq!(at(TAB_LOOK, 100, 196), Some(Hit::ResetLook));
     assert_eq!(at(TAB_LOOK, 100, 34), None); // Settings tab's controls are gone
+    assert_eq!(at(TAB_LOOK, 15, 34), Some(Hit::ColourTitle));
+    assert_eq!(at(S, 15, 87), Some(Hit::BrainTitle));
+    assert_eq!(at(S, 100, 87), None);
     // Sliders span their range and snap to the standard setting.
     assert_eq!(crate::slider_to_size(slider_at(Hit::Slider, 0, p)), crate::settings::MIN_SIZE);
     assert_eq!(crate::slider_to_size(slider_at(Hit::Slider, 10_000, p)), crate::settings::MAX_SIZE);
@@ -1575,6 +1581,7 @@ fn claude_code_reads_an_image() {
         look_normal: crate::settings::LOOK_DEFAULT,
         swatches: crate::settings::swatch_colours(),
         swatch_on: None,
+        nootropic: false,
         hover: None,
     };
     draw_panel(&mut buf, pw, &v, p);
