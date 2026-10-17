@@ -1009,6 +1009,9 @@ fn settings_panel_renders_and_hits() {
     assert_eq!(at(TAB_CHAT, 100, 100), None); // the log
     assert_eq!(at(TAB_CHAT, 100, 180), None); // the input line
     assert_eq!(at(TAB_CHAT, 100, 158), Some(Hit::Shoot));
+    assert_eq!(at(TAB_CHAT, 180, 196), Some(Hit::ClearChat));
+    assert_eq!(at(TAB_CHAT, 60, 196), None); // the brain line
+    assert_eq!(at(1, 180, 196), Some(Hit::Quit)); // only on the Chat tab
     let with_shot = |x: usize, y: usize| panel_hit(x as i32 * 2, y as i32 * 2, TAB_CHAT, false, true, p);
     assert_eq!(with_shot(100, 158), None); // the thumbnail and label
     assert_eq!(with_shot(200, 158), Some(Hit::DropShot));

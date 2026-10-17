@@ -131,6 +131,8 @@ pub enum Hit {
     Shoot,
     /// Remove the attached screenshot.
     DropShot,
+    /// Forget the conversation and start a new session.
+    ClearChat,
     // Settings tab.
     Slider,
     Jump,
@@ -229,6 +231,9 @@ const CHAT_COLS: usize = PANEL_COLS - 1;
 /// The screenshot row (button, or thumbnail and label), between the log and the input.
 const ROW_SHOT: usize = 149;
 const ROW_INPUT: usize = 178;
+/// "Clear chat", on the bottom row beside the brain line.
+const CLEAR_X: usize = col(PANEL_COLS - 10) - 1;
+const CLEAR_W: usize = 10 * ADVANCE + 1;
 // Settings tab rows.
 const ROW_SIZE: usize = 33;
 const ROW_JUMP: usize = 46;
@@ -311,6 +316,7 @@ fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool) -> Vec<(Hit, usize,
         } else {
             v.push((Hit::Shoot, PAD - 1, ROW_SHOT + 5, full, GLYPH_H + 4));
         }
+        v.push((Hit::ClearChat, CLEAR_X, ROW_BUTTONS - 2, CLEAR_W, GLYPH_H + 4));
         return v;
     }
     if tab == TAB_LOOK {
@@ -642,7 +648,13 @@ fn draw_chat_tab(cv: &mut Canvas, v: &PanelView) {
         let at = if shown.is_empty() { x } else { x + text_width(shown) + 2 };
         cv.rect(at, ROW_INPUT + GLYPH_H - 1, GLYPH_W - 1, 1, px(TEXT, 1.0));
     }
-    cv.text(PAD, ROW_BUTTONS, &v.brain_line.chars().take(PANEL_COLS).collect::<String>(), HINT);
+    // The brain line, cut short to leave room for "Clear chat".
+    let mut brain: String = v.brain_line.to_string();
+    while text_width(&brain) > CLEAR_X - PAD - 3 {
+        brain.pop();
+    }
+    cv.text(PAD, ROW_BUTTONS, &brain, HINT);
+    cv.button(CLEAR_X, ROW_BUTTONS - 2, CLEAR_W, "Clear chat", v.hover == Some(Hit::ClearChat));
 }
 
 fn draw_look_tab(cv: &mut Canvas, v: &PanelView) {

@@ -331,6 +331,8 @@ pub struct Brain {
     tx: Sender<Job>,
     rx: Receiver<Reply>,
     pub waiting: bool,
+    /// Answers still on their way to a conversation that's since been cleared.
+    discard: u32,
     pub session: Arc<Mutex<SessionState>>,
     /// May he search the web?
     pub web: bool,
@@ -343,7 +345,7 @@ impl Brain {
         let session = Arc::new(Mutex::new(SessionState::Closed));
         let state = session.clone();
         std::thread::spawn(move || worker(worker_rx, worker_tx, state));
-        Brain { history: Vec::new(), tx, rx, waiting: false, session, web: true }
+        Brain { history: Vec::new(), tx, rx, waiting: false, discard: 0, session, web: true }
     }
 
     /// Sends a question, with a picture if given; the answer arrives later through `poll`.
@@ -371,12 +373,29 @@ impl Brain {
         let _ = self.tx.send(Job::Close);
     }
 
+    /// Forgets the conversation and closes the Claude Code session (a new one starts on
+    /// the next `warm` or question). An answer still on its way is thrown away.
+    pub fn clear(&mut self) {
+        self.history.clear();
+        if self.waiting {
+            self.waiting = false;
+            self.discard += 1;
+        }
+        self.close_session();
+    }
+
     pub fn session_state(&self) -> SessionState {
         self.session.lock().map(|s| s.clone()).unwrap_or(SessionState::Closed)
     }
 
     pub fn poll(&mut self) -> Option<Reply> {
         let reply = self.rx.try_recv().ok()?;
+        if self.discard > 0 {
+            if !matches!(reply, Reply::Searching(_)) {
+                self.discard -= 1;
+            }
+            return None;
+        }
         if matches!(reply, Reply::Searching(_)) {
             return Some(reply);
         }
