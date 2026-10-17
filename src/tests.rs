@@ -906,7 +906,8 @@ fn speech_bubble_renders() {
     sheet.frames.push(frame);
     sheet.save("ui");
     assert!(bw > 100 && bh > 40);
-    assert!(lines.iter().all(|l| l.len() <= BUBBLE_COLS));
+    let max = BUBBLE_COLS * crate::font::ADVANCE - 1;
+    assert!(lines.iter().all(|l| crate::font::text_width(l) <= max));
 }
 
 #[test]
@@ -994,8 +995,9 @@ fn settings_panel_renders_and_hits() {
     let at = |tab: usize, x: usize, y: usize| panel_hit(x as i32 * p as i32, y as i32 * p as i32, tab, true, false, p);
     assert_eq!(at(TAB_CHAT, 204, 5), Some(Hit::Close));
     assert_eq!(at(TAB_CHAT, 15, 20), Some(Hit::Tab(0)));
-    assert_eq!(at(TAB_CHAT, 60, 20), Some(Hit::Tab(1)));
-    assert_eq!(at(TAB_CHAT, 130, 20), Some(Hit::Tab(2)));
+    assert_eq!(at(TAB_CHAT, 45, 20), Some(Hit::Tab(1)));
+    assert_eq!(at(TAB_CHAT, 95, 20), Some(Hit::Tab(2)));
+    assert_eq!(at(TAB_CHAT, 130, 20), None); // past the last tab
     assert_eq!(at(TAB_CHAT, 100, 100), None); // the log
     assert_eq!(at(TAB_CHAT, 100, 180), None); // the input line
     assert_eq!(at(TAB_CHAT, 100, 158), Some(Hit::Shoot));

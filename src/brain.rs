@@ -1340,7 +1340,8 @@ answer: {t}");
         let mut s = Speech::new();
         s.say(&"word ".repeat(80));
         let (lines, _) = s.view().unwrap();
-        assert!(lines.len() <= BUBBLE_ROWS && lines.iter().all(|l| l.len() <= BUBBLE_COLS));
+        let max = BUBBLE_COLS * crate::font::ADVANCE - 1;
+        assert!(lines.len() <= BUBBLE_ROWS && lines.iter().all(|l| crate::font::text_width(l) <= max));
         for _ in 0..4000 {
             s.update(0.02);
         }

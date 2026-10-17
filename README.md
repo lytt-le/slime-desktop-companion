@@ -6,7 +6,7 @@ A gooey pixel-art slime that lives on your Windows desktop. He sits on your wind
 
 - **Left-click + drag** the slime: pick him up; release to drop or fling him
 - **Left-click anywhere else**: he hops toward the click (toggle with *Jump to clicks*)
-- **Right-click while holding him** (left button still down): stick a drawing pin through him. Let go and he stays pinned to that spot on the screen, dangling from the pin and dripping as if carried (no antics; if his monitor goes fullscreen he hides behind it). Grab him again to pull the pin out: it pings off and falls away.
+- **Right-click while holding him** (left button still down): stick a drawing pin through him (a red pixel-art thumbtack, its needle buried in him). Let go and he stays pinned to that spot on the screen, dangling from the pin and dripping as if carried (no antics; if his monitor goes fullscreen he hides behind it). Grab him again to pull the pin out: it pings off and falls away.
 - **Right-click** the slime or the tray icon: the **settings panel** below
 - **Tray icon → double-click**: reset
 
@@ -115,5 +115,9 @@ The exe runs itself as a worker under a tiny guardian. If the worker crashes, th
 - `brain.rs`: fun facts, and chat on a worker thread through the chosen provider: a persistent Claude Code session, or the Anthropic / DeepSeek APIs over WinHTTP. Short in-character replies; friendly messages for bad keys, sign-in, usage limits, rate limits, overload and refusals; web search (Claude Code's tools, Anthropic's server tools, or DeepSeek's Search/Fetch APIs run as functions); a speech queue that types replies out a page at a time.
 - `shot.rs`: "Ask about this page": finds the window in front, captures it (keeping the slime's windows out of the shot), scales it, encodes PNG/JPEG with GDI+, makes the thumbnail.
 - `settings.rs`: the panel's choices, saved as JSON, and how the Customisation sliders map onto the sim's `Tuning` and the renderer's `Palette` (the middle of every slider is the classic slime).
-- `font.rs` / `ui.rs`: a 5x7 (+ descender) bitmap font, and the pixel speech bubble and the tabbed panel (chat log and input, buttons, sliders, checkboxes, selectors, swatches, hit-testing), drawn in chunky pixels to match the slime.
+- `font.rs` / `ui.rs`: the [Tiny5](https://fonts.google.com/specimen/Tiny5) pixel font (proportional, from its BDF edition), and the pixel speech bubble and the tabbed panel (chat log and input, buttons, sliders, checkboxes, selectors, swatches, hit-testing), drawn in chunky pixels to match the slime.
 - `draw.rs`: each cell drawn as a solid square with neighbourhood-based pixel-art shading: dark outline, lit top rim, depth gradient, shadowed underside, a shine sprite, bubble rings, a per-cell tint that travels with the goo so you can see it flow, and the eyes in whatever look his mood calls for.
+
+## Credits
+
+Text is set in [Tiny5](https://github.com/Gissio/font_tiny5), Copyright 2022-2024 The Tiny5 Project Authors, used under the SIL Open Font License 1.1 (see `assets/Tiny5-OFL.txt`).

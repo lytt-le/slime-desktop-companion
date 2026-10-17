@@ -1,7 +1,7 @@
 //! Pixel-art speech bubble and settings panel, drawn with the 5x7 font in chunky
 //! pixels (`p` screen pixels per font pixel) into premultiplied BGRA buffers.
 
-use super::font::{pixel, ADVANCE, GLYPH_H, GLYPH_W};
+use super::font::{advance, pixel, text_width, ADVANCE, GLYPH_H, GLYPH_W};
 
 /// Characters per bubble line, and bubble lines per page.
 pub const BUBBLE_COLS: usize = 26;
@@ -51,14 +51,16 @@ impl Canvas<'_> {
 
     fn text(&mut self, x: usize, y: usize, s: &str, c: Rgb) {
         let col = px(c, 1.0);
-        for (i, ch) in s.chars().enumerate() {
+        let mut pen = x;
+        for ch in s.chars() {
             for gy in 0..GLYPH_H {
-                for gx in 0..GLYPH_W {
+                for gx in 0..advance(ch) {
                     if pixel(ch, gx, gy) {
-                        self.rect(x + i * ADVANCE + gx, y + gy, 1, 1, col);
+                        self.rect(pen + gx, y + gy, 1, 1, col);
                     }
                 }
             }
+            pen += advance(ch);
         }
     }
 
@@ -77,8 +79,8 @@ impl Canvas<'_> {
 
 /// Size in screen pixels of a bubble holding `lines`.
 pub fn bubble_size(lines: &[String], p: usize) -> (usize, usize) {
-    let cols = lines.iter().map(|l| l.len()).max().unwrap_or(1).max(3);
-    let w = cols * ADVANCE - 1 + PAD * 2;
+    let text = lines.iter().map(|l| text_width(l)).max().unwrap_or(0).max(3 * ADVANCE - 1);
+    let w = text + PAD * 2;
     let h = lines.len().max(1) * (GLYPH_H + LINE_GAP) - LINE_GAP + PAD * 2;
     ((w + 1) * p, (h + TAIL + 1) * p)
 }
@@ -269,7 +271,7 @@ fn tune_row(i: usize) -> usize {
 
 /// Left edge and width of tab `i`.
 fn tab_rect(i: usize) -> (usize, usize) {
-    let w = |t: &str| t.len() * ADVANCE + 7;
+    let w = |t: &str| text_width(t) + 8;
     let x = PAD - 1 + TABS[..i].iter().map(|t| w(t) + 2).sum::<usize>();
     (x, w(TABS[i]))
 }
@@ -378,7 +380,7 @@ impl Canvas<'_> {
 
     fn button(&mut self, x: usize, y: usize, w: usize, label: &str, hover: bool) {
         self.boxed(x, y, w, GLYPH_H + 4, if hover { HOVER } else { BUTTON });
-        let tw = label.len() * ADVANCE - 1;
+        let tw = text_width(label);
         self.text(x + (w - tw) / 2, y + 2, label, TEXT);
     }
 
@@ -413,7 +415,7 @@ impl Canvas<'_> {
 
     fn divider(&mut self, y: usize, label: &str) {
         self.text(PAD, y, label, PROMPT);
-        let x = PAD + label.len() * ADVANCE + 2;
+        let x = PAD + text_width(label) + 3;
         self.rect(x, y + 3, PANEL_W - PAD - x, 1, px(TRACK, 1.0));
     }
 
@@ -493,7 +495,7 @@ fn draw_settings_tab(cv: &mut Canvas, v: &PanelView) {
     cv.text(PAD, ROW_SIZE, "Size", TEXT);
     cv.slider(SLIDER_X0, SLIDER_X1, ROW_SIZE, v.size, v.size_normal, hover(Hit::Slider), Track::Plain);
     let pct = format!("{}%", v.size_pct);
-    cv.text(col(PANEL_COLS) - pct.len() * ADVANCE - 2, ROW_SIZE, &pct, TEXT);
+    cv.text(col(PANEL_COLS) - text_width(&pct) - 3, ROW_SIZE, &pct, TEXT);
 
     cv.checkbox(ROW_JUMP, "Jump to clicks", v.jump, hover(Hit::Jump));
     cv.checkbox(ROW_FACTS, "Fun facts", v.facts, hover(Hit::Facts));
@@ -574,17 +576,23 @@ fn draw_chat_tab(cv: &mut Canvas, v: &PanelView) {
     // The input line, showing the end of what's typed.
     cv.boxed(PAD - 1, ROW_INPUT - 3, full, GLYPH_H + 6, FILL);
     cv.text(PAD + 2, ROW_INPUT, ">", PROMPT);
-    let room = CHAT_COLS - 3;
-    let x = PAD + 2 + 2 * ADVANCE;
+    let room = (CHAT_COLS - 3) * ADVANCE - GLYPH_W - 2;
+    let x = PAD + 2 + text_width(">") + 5;
+    // As much of the end of the input as fits.
+    let mut shown: &str = &v.input;
+    while text_width(shown) > room {
+        let mut rest = shown.chars();
+        rest.next();
+        shown = rest.as_str();
+    }
     if v.input.is_empty() {
         cv.text(x, ROW_INPUT, if v.shot.is_some() { "ask about the screenshot..." } else { "ask me anything..." }, HINT);
     } else {
-        let start = v.input.len().saturating_sub(room);
-        cv.text(x, ROW_INPUT, &v.input[start..], TEXT);
+        cv.text(x, ROW_INPUT, shown, TEXT);
     }
     if v.cursor_on {
-        let shown = v.input.len().min(room);
-        cv.rect(x + shown * ADVANCE, ROW_INPUT + GLYPH_H - 1, GLYPH_W, 1, px(TEXT, 1.0));
+        let at = if shown.is_empty() { x } else { x + text_width(shown) + 2 };
+        cv.rect(at, ROW_INPUT + GLYPH_H - 1, GLYPH_W - 1, 1, px(TEXT, 1.0));
     }
     cv.text(PAD, ROW_BUTTONS, &v.brain_line.chars().take(PANEL_COLS).collect::<String>(), HINT);
 }

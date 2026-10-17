@@ -55,6 +55,44 @@ struct LoosePin {
 
 const PIN_FALL_FOR: f32 = 1.4;
 
+/// A drawing pin, pixelated from a photo (pin.png): domed cap at the top right, a narrow
+/// neck, a flared base, and the needle at the bottom left. D outline, S shade, R red,
+/// L lit, H glint, G/g needle.
+#[rustfmt::skip]
+const PIN: [&str; 16] = [
+    "...........DLLDD..",
+    "..........DLLLLLD.",
+    ".........DSLHLLLD.",
+    ".........DSLHLLLLD",
+    ".........DSLLLLLLD",
+    ".........DSSLLLLLD",
+    "........DLRSSSLLD.",
+    "...D..DDLRSDSSSD..",
+    "..DLDDLLRSD.DDD...",
+    ".DLLLLRRSD........",
+    "DLLLRRRSD.........",
+    "DLRRRRSSD.........",
+    ".DRRRSSD..........",
+    ".DRRSSSD..........",
+    ".GDDSSD...........",
+    "G...DD............",
+];
+/// Where the needle goes into him: the base's centre, just above the needle.
+const PIN_AT: (f32, f32) = (2.5, 12.5);
+
+fn pin_colour(c: u8) -> Option<[f32; 4]> {
+    Some(match c {
+        b'D' => [110.0, 12.0, 22.0, 1.0],
+        b'S' => [168.0, 22.0, 34.0, 1.0],
+        b'R' => [214.0, 38.0, 48.0, 1.0],
+        b'L' => [240.0, 84.0, 92.0, 1.0],
+        b'H' => [255.0, 186.0, 188.0, 1.0],
+        b'G' => [210.0, 214.0, 222.0, 1.0],
+        b'g' => [120.0, 126.0, 138.0, 1.0],
+        _ => return None,
+    })
+}
+
 struct Cigarette {
     /// Seconds left, which side it sticks out of (-1 left, 1 right).
     left: f32,
@@ -122,7 +160,7 @@ impl Fx {
     pub fn pull_pin(&mut self, at: V2, scale: f32) {
         let v = v2((self.rand() - 0.5) * 300.0, -(250.0 + self.rand() * 150.0)) * scale.max(0.5);
         let spin = (self.rand() - 0.5) * 24.0;
-        self.loose.push(LoosePin { p: at, v, angle: -1.2, spin, age: 0.0 });
+        self.loose.push(LoosePin { p: at, v, angle: 0.0, spin, age: 0.0 });
         self.pin = None;
     }
 
@@ -337,11 +375,12 @@ impl Fx {
         for z in &self.zs {
             grow(world.to_cell(z.p), 8.0);
         }
+        let pin_reach = (PIN.len().max(PIN[0].len()) + 2) as f32 * if world.scale > 1.4 { 2.0 } else { 1.0 };
         if let Some(p) = self.pin {
-            grow(world.to_cell(p), 6.0);
+            grow(world.to_cell(p), pin_reach);
         }
         for l in &self.loose {
-            grow(world.to_cell(l.p), 8.0);
+            grow(world.to_cell(l.p), pin_reach);
         }
         if lo.x > hi.x {
             return None;
@@ -433,53 +472,40 @@ impl Fx {
                 }
             }
         }
-        // The drawing pin: a round red head pushed into him, with a shine and a shadow.
-        let k = if world.scale > 1.4 { 2.0 } else { 1.0 };
-        if let Some(p) = self.pin {
-            let c = world.to_cell(p);
-            let r = 3.6 * k;
-            for y in (c.y - r - 1.0).floor() as i32..=(c.y + r + 2.0).ceil() as i32 {
-                for x in (c.x - r - 1.0).floor() as i32..=(c.x + r + 2.0).ceil() as i32 {
-                    let d = v2(x as f32 + 0.5 - c.x, y as f32 + 0.5 - c.y);
-                    let shadow = (d - v2(k, k)).len();
-                    if d.len() <= r {
-                        // A domed head: lit from the top left, a darker lip below.
-                        let rim = d.len() > r - 1.0;
-                        let col = if (d - v2(-0.38 * r, -0.38 * r)).len() < 0.22 * r + 0.4 {
-                            [255.0, 220.0, 220.0, 1.0] // glint
-                        } else if rim && d.x + d.y > -0.3 * r {
-                            [120.0, 14.0, 26.0, 1.0]
-                        } else if rim {
-                            [180.0, 30.0, 42.0, 1.0]
-                        } else if d.x + d.y < -0.2 * r {
-                            [240.0, 74.0, 84.0, 1.0]
-                        } else {
-                            [214.0, 38.0, 50.0, 1.0]
-                        };
-                        put(x, y, col);
-                    } else if shadow <= r {
-                        put(x, y, [10.0, 30.0, 12.0, 0.35]);
+        // The drawing pin, pushed into him at the pin point (the needle's out of sight
+        // inside him); pins pulled out tumble down, needle and all. `k` cells per sprite
+        // pixel on a big slime.
+        let k = if world.scale > 1.4 { 2 } else { 1 };
+        let mut sprite = |at: V2, angle: f32, needle: bool, fade: f32| {
+            let (s, c) = angle.sin_cos();
+            let reach = (PIN.len().max(PIN[0].len()) as i32 + 2) * k;
+            let (ax, ay) = (at.x.floor() as i32, at.y.floor() as i32);
+            for dy in -reach..=reach {
+                for dx in -reach..=reach {
+                    // Back into sprite pixels (turned by -angle about the pin point).
+                    let (fx, fy) = ((dx as f32 + 0.5) / k as f32, (dy as f32 + 0.5) / k as f32);
+                    let (u, v) = (fx * c + fy * s + PIN_AT.0, -fx * s + fy * c + PIN_AT.1);
+                    if u < 0.0 || v < 0.0 {
+                        continue;
+                    }
+                    let Some(row) = PIN.get(v as usize) else { continue };
+                    let Some(&ch) = row.as_bytes().get(u as usize) else { continue };
+                    if !needle && (ch == b'G' || ch == b'g') {
+                        continue;
+                    }
+                    if let Some(mut col) = pin_colour(ch) {
+                        col[3] = fade;
+                        put(ax + dx, ay + dy, col);
                     }
                 }
             }
+        };
+        if let Some(p) = self.pin {
+            sprite(world.to_cell(p), 0.0, false, 1.0);
         }
-        // Pins pulled out: a little red head and a steel needle, tumbling down.
         for l in &self.loose {
             let fade = 1.0 - (l.age / PIN_FALL_FOR - 0.7).max(0.0) / 0.3;
-            let c = world.to_cell(l.p);
-            let dir = v2(l.angle.cos(), l.angle.sin());
-            for i in 0..(4.0 * k) as i32 + 1 {
-                let q = c + dir * (i as f32 + 1.5 * k);
-                put(q.x.floor() as i32, q.y.floor() as i32, [190.0, 196.0, 205.0, fade]);
-            }
-            let r = 1.6 * k;
-            for y in (c.y - r).floor() as i32..=(c.y + r).ceil() as i32 {
-                for x in (c.x - r).floor() as i32..=(c.x + r).ceil() as i32 {
-                    if v2(x as f32 + 0.5 - c.x, y as f32 + 0.5 - c.y).len() <= r {
-                        put(x, y, [222.0, 44.0, 56.0, fade]);
-                    }
-                }
-            }
+            sprite(world.to_cell(l.p), l.angle, true, fade);
         }
         let o = world.to_screen(v2(x0 as f32, y0 as f32));
         Some((o.x as i32, o.y as i32, w, h))
