@@ -58,6 +58,8 @@ const MAX_QUESTION: usize = 400;
 /// how long a rainbow slime takes to go once round the colour wheel.
 const TRIPLE_GAP: f32 = 0.5;
 const RAINBOW_LAP: f32 = 6.0;
+/// Keepy uppies: how long the count stays up after he lands.
+const KEEPY_LINGER: f32 = 1.5;
 
 enum Event {
     GrabStart,
@@ -579,6 +581,11 @@ fn app(respawned: bool) {
         // was), and a moment's pause before nootropic mode lights another cigarette.
         let mut title_taps: (Option<Hit>, u32, Instant) = (None, 0, Instant::now());
         let mut relight_in = 0.0f32;
+        // Keepy uppies: bounces in this run (0 when he's not being kept up), the count on
+        // show and how long it stays up once the run's over, and whether it's a new best.
+        let mut keepy_run = 0u32;
+        let mut keepy_shown = (0u32, 0.0f32);
+        let mut keepy_record = false;
         // The current provider's key (re-read when it may have changed).
         let mut key_cache: Option<Option<(String, brain::KeySource)>> = None;
         let mut greeted = false;
@@ -845,6 +852,10 @@ fn app(respawned: bool) {
                                 cfg.idle = !cfg.idle;
                                 cfg.save();
                             }
+                            Some(Hit::Keepy) => {
+                                cfg.keepy = !cfg.keepy;
+                                cfg.save();
+                            }
                             Some(Hit::Web) => {
                                 cfg.web = !cfg.web;
                                 cfg.save();
@@ -1018,6 +1029,18 @@ fn app(respawned: bool) {
             }
             world.tune = cfg.tuning();
             world.palette = cfg.palette();
+            // Keepy uppies: falling onto the cursor, he bounces; the run ends when he lands
+            // or is picked up.
+            if cfg.keepy && world.keepy_up(mouse) {
+                keepy_run += 1;
+                if keepy_run > cfg.keepy_best {
+                    cfg.keepy_best = keepy_run;
+                    keepy_record = true;
+                }
+                keepy_shown = (keepy_run, f32::INFINITY);
+                fx.wake();
+                idle_for = 0.0;
+            }
             while acc >= FRAME {
                 world.step(FRAME);
                 acc -= FRAME;
@@ -1037,6 +1060,23 @@ fn app(respawned: bool) {
             if was_asleep && !fx.asleep() {
                 world.start_antic(Antic::Stretch);
             }
+            if keepy_run > 0 && (world.resting() || world.grab.is_some()) {
+                if keepy_record {
+                    cfg.save();
+                    if keepy_run >= 3 {
+                        speech.say(&format!("New record: {keepy_run} keepy uppies!"));
+                    }
+                }
+                keepy_run = 0;
+                keepy_shown.1 = KEEPY_LINGER;
+            }
+            if keepy_run == 0 {
+                keepy_shown.1 -= dt;
+                if keepy_shown.1 <= 0.0 {
+                    keepy_record = false;
+                }
+            }
+            fx.keepy = (keepy_shown.0 > 0 && keepy_shown.1 > 0.0).then(|| (keepy_shown.0, (keepy_shown.1 / 0.4).min(1.0), keepy_record));
             // Nootropic mode: a fresh cigarette shortly after each one is knocked away.
             if cfg.nootropic && !fx.smoking() && !fx.asleep() && (world.grab.is_none() || world.pinned) {
                 relight_in -= dt;
@@ -1235,6 +1275,8 @@ fn app(respawned: bool) {
                     facts: cfg.facts,
                     idle: cfg.idle,
                     web: cfg.web,
+                    keepy: cfg.keepy,
+                    keepy_best: cfg.keepy_best,
                     provider: cfg.provider.label(),
                     model: cfg.model().1,
                     key: &key_text,

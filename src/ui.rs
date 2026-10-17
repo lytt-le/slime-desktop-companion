@@ -138,6 +138,7 @@ pub enum Hit {
     Jump,
     Facts,
     Idle,
+    Keepy,
     Web,
     ProviderPrev,
     ProviderNext,
@@ -184,6 +185,9 @@ pub struct PanelView<'a> {
     pub facts: bool,
     pub idle: bool,
     pub web: bool,
+    /// Keepy uppies, and its high score.
+    pub keepy: bool,
+    pub keepy_best: u32,
     pub provider: &'a str,
     pub model: &'a str,
     pub key: &'a str,
@@ -239,12 +243,13 @@ const ROW_SIZE: usize = 33;
 const ROW_JUMP: usize = 46;
 const ROW_FACTS: usize = 58;
 const ROW_IDLE: usize = 70;
-const ROW_BRAIN: usize = 84;
-const ROW_PROVIDER: usize = 97;
-const ROW_MODEL: usize = 110;
-const ROW_WEB: usize = 123;
-const ROW_KEY: usize = 136;
-const ROW_STATUS: usize = 149;
+const ROW_KEEPY: usize = 82;
+const ROW_BRAIN: usize = 96;
+const ROW_PROVIDER: usize = 109;
+const ROW_MODEL: usize = 122;
+const ROW_WEB: usize = 135;
+const ROW_KEY: usize = 148;
+const ROW_STATUS: usize = 161;
 // Customisation tab rows.
 const ROW_COLOUR: usize = 31;
 const ROW_SWATCHES: usize = 42;
@@ -336,6 +341,7 @@ fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool) -> Vec<(Hit, usize,
         (Hit::Jump, PAD - 1, ROW_JUMP - 2, full, GLYPH_H + 3),
         (Hit::Facts, PAD - 1, ROW_FACTS - 2, full, GLYPH_H + 3),
         (Hit::Idle, PAD - 1, ROW_IDLE - 2, full, GLYPH_H + 3),
+        (Hit::Keepy, PAD - 1, ROW_KEEPY - 2, full, GLYPH_H + 3),
         (Hit::ProviderPrev, col(9), ROW_PROVIDER - 2, 3 * ADVANCE, GLYPH_H + 4),
         (Hit::ProviderNext, col(12), ROW_PROVIDER - 2, col(PANEL_COLS) - col(12), GLYPH_H + 4),
         (Hit::ModelPrev, col(9), ROW_MODEL - 2, 3 * ADVANCE, GLYPH_H + 4),
@@ -554,6 +560,9 @@ fn draw_settings_tab(cv: &mut Canvas, v: &PanelView) {
     cv.checkbox(ROW_JUMP, "Jump to clicks", v.jump, hover(Hit::Jump));
     cv.checkbox(ROW_FACTS, "Fun facts", v.facts, hover(Hit::Facts));
     cv.checkbox(ROW_IDLE, "Idle antics", v.idle, hover(Hit::Idle));
+    cv.checkbox(ROW_KEEPY, "Keepy uppies", v.keepy, hover(Hit::Keepy));
+    let best = format!("Best: {}", v.keepy_best);
+    cv.text(col(PANEL_COLS) - text_width(&best) - 3, ROW_KEEPY, &best, HINT);
 
     cv.divider(ROW_BRAIN, "Brain");
     cv.selector(ROW_PROVIDER, "Provider", v.provider, v.hover, Hit::ProviderPrev, Hit::ProviderNext);
