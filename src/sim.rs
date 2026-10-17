@@ -75,6 +75,10 @@ const CARRY_SAG: f32 = 0.25;
 const FRICTION: f32 = 0.25;
 /// Most cells a particle may cross per substep.
 const MAX_STEP: f32 = 12.0;
+/// Keepy uppies: how high a bounce off the cursor sends him (body radii), and how much
+/// of that speed goes sideways when the cursor catches him right at the edge.
+const KEEPY_APEX: f32 = 4.0;
+const KEEPY_SIDE: f32 = 0.35;
 /// Cells further than this many radii from the body drop off as goo.
 const DETACH: f32 = 2.4;
 const GOO_LIFE: (f32, f32) = (5.0, 8.0);
@@ -729,6 +733,39 @@ impl World {
             }
         }
         self.launch_grace = 0.25;
+        true
+    }
+
+    /// Keepy uppies: falling onto the cursor (`at`, screen px) bounces him back up, off
+    /// to the side when it catches him off-centre. True if he bounced.
+    pub fn keepy_up(&mut self, at: V2) -> bool {
+        if self.grab.is_some() || self.resting || self.vb.y <= 0.0 {
+            return false;
+        }
+        let Some((x0, _, x1, _)) = self.body_bounds() else { return false };
+        let p = self.to_cell(at);
+        let r = self.radius().max(1.0);
+        let bottom = (self.body_bottom + 1) as f32;
+        // Under his bottom edge, reaching up far enough that a fast fall can't pass
+        // through the cursor between frames.
+        let reach = (r * 0.6).max(self.vb.y * SUBSTEPS as f32 + 1.0);
+        if p.x < x0 as f32 || p.x > (x1 + 1) as f32 || p.y < bottom - reach || p.y > bottom + 2.0 {
+            return false;
+        }
+        let (c, _) = self.body();
+        let g = self.g * self.tune.weight;
+        let vy = -(2.0 * g * r * KEEPY_APEX).sqrt();
+        let off = ((c.x - p.x) / ((x1 - x0) as f32 * 0.5).max(1.0)).clamp(-1.0, 1.0);
+        self.vb = v2(off * KEEPY_SIDE * -vy, vy);
+        self.fb = V2::ZERO;
+        self.antic = None;
+        // Squashed against the cursor, then springing up.
+        self.squash_v -= JELLY_LAND * self.tune.jelly_kick * 1.2;
+        for e in &mut self.ents {
+            if e.kind != Kind::Goo {
+                e.v = v2(0.0, vy * 0.15 * ((c.y - e.y as f32) / r).clamp(-1.0, 1.0));
+            }
+        }
         true
     }
 

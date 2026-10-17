@@ -4,6 +4,7 @@
 //! they stick out past it.
 
 use super::draw::{EyeBlock, Look};
+use super::font::{advance, pixel, text_width, GLYPH_H};
 use super::sim::{Kind, World};
 use crate::physics::{v2, V2};
 
@@ -54,6 +55,8 @@ struct LoosePin {
 }
 
 const PIN_FALL_FOR: f32 = 1.4;
+/// Keepy uppies count: cells per font pixel.
+const KEEPY_K: i32 = 2;
 
 /// A drawing pin (after a pixel-art pushpin, recoloured red): round cap at the top
 /// right, a tilted base, the dark joint between them, and the needle at the bottom left.
@@ -129,6 +132,9 @@ pub struct Fx {
     /// Where he's pinned to the screen (screen px), and pins on their way down.
     pub pin: Option<V2>,
     loose: Vec<LoosePin>,
+    /// Keepy uppies: bounces in a row to show beside him, how solid (0..1), and whether
+    /// it's a new best.
+    pub keepy: Option<(u32, f32, bool)>,
 }
 
 /// The cigarette's cells (cell coords, colour) and where its glowing tip is, for a
@@ -141,7 +147,7 @@ struct CigCells {
 
 impl Fx {
     pub fn new(seed: u32) -> Fx {
-        Fx { angry: 0.0, dizzy: 0.0, asleep: None, cig: None, zs: Vec::new(), smoke: Vec::new(), z_in: 0.5, clock: 0.0, rng: seed | 1, pin: None, loose: Vec::new() }
+        Fx { angry: 0.0, dizzy: 0.0, asleep: None, cig: None, zs: Vec::new(), smoke: Vec::new(), z_in: 0.5, clock: 0.0, rng: seed | 1, pin: None, loose: Vec::new(), keepy: None }
     }
 
     fn rand(&mut self) -> f32 {
@@ -356,12 +362,17 @@ impl Fx {
 
     /// Anything moving (a pin just sitting there isn't).
     pub fn animating(&self) -> bool {
-        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || !self.loose.is_empty()
+        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || !self.loose.is_empty() || self.keepy.is_some()
     }
 
     /// Anything to draw in the effects window.
     pub fn visible(&self) -> bool {
-        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || self.pin.is_some() || !self.loose.is_empty()
+        self.cig.is_some()
+            || !self.zs.is_empty()
+            || !self.smoke.is_empty()
+            || self.pin.is_some()
+            || !self.loose.is_empty()
+            || self.keepy.is_some()
     }
 
     /// Draws Z's, the cigarette and smoke into `buf` (`stride` px wide, `rows` tall).
@@ -397,6 +408,33 @@ impl Fx {
         for l in &self.loose {
             grow(world.to_cell(l.p), pin_reach);
         }
+        // Keepy uppies: the count's cells, two per font pixel.
+        let keepy = self.keepy.and_then(|(n, a, best)| {
+            let (x0, y0, x1, _) = world.body_bounds()?;
+            let text = n.to_string();
+            let (tw, th) = (text_width(&text) as i32 * KEEPY_K, GLYPH_H as i32 * KEEPY_K);
+            // Just off his top right corner (top left by the right edge of the desktop),
+            // and never above the top.
+            let x = if x1 + 3 + tw < world.w { x1 + 2 } else { x0 - 2 - tw };
+            let y = (y0 - th + 2).max(1);
+            grow(v2(x as f32, y as f32), 1.0);
+            grow(v2((x + tw) as f32, (y + th) as f32), 1.0);
+            let mut cells = Vec::new();
+            let mut pen = x;
+            for ch in text.chars() {
+                for gy in 0..GLYPH_H {
+                    for gx in 0..advance(ch) {
+                        if pixel(ch, gx, gy) {
+                            for k in 0..KEEPY_K * KEEPY_K {
+                                cells.push((pen + gx as i32 * KEEPY_K + k % KEEPY_K, y + gy as i32 * KEEPY_K + k / KEEPY_K));
+                            }
+                        }
+                    }
+                }
+                pen += advance(ch) as i32 * KEEPY_K;
+            }
+            Some((cells, a, best))
+        });
         if lo.x > hi.x {
             return None;
         }
@@ -485,6 +523,23 @@ impl Fx {
                         }
                     }
                 }
+            }
+        }
+        // Keepy uppies: the count in the pixel font with a dark rim, gold on a new best.
+        if let Some((cells, a, best)) = &keepy {
+            let ink = if *best { [255.0, 214.0, 70.0, *a] } else { [240.0, 244.0, 255.0, *a] };
+            // A dark rim (each cell once) so it reads on any background.
+            let lit: std::collections::HashSet<(i32, i32)> = cells.iter().copied().collect();
+            let rim: std::collections::HashSet<(i32, i32)> = cells
+                .iter()
+                .flat_map(|&(x, y)| [(1, 0), (0, 1), (1, 1), (-1, 0), (0, -1)].map(|(dx, dy)| (x + dx, y + dy)))
+                .filter(|p| !lit.contains(p))
+                .collect();
+            for &(x, y) in &rim {
+                put(x, y, [24.0, 32.0, 48.0, a * 0.6]);
+            }
+            for &(x, y) in cells {
+                put(x, y, ink);
             }
         }
         // The drawing pin, pushed into him at the pin point (the needle's out of sight

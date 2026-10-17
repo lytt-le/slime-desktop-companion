@@ -835,6 +835,51 @@ fn pinned_to_the_screen() {
     sheet.save("pinned");
 }
 
+/// Keepy uppies: dropped onto a cursor that follows him about (as a player would), he
+/// keeps bouncing off it without ever landing, with the count beside him; take the
+/// cursor away and he lands.
+#[test]
+fn keepy_uppies() {
+    use crate::fx::Fx;
+    // Off the right of the raised platform, well above the floor.
+    let mut w = world_at(v2(480.0, 120.0));
+    let mut sheet = Sheet::new();
+    let mut fx = Fx::new(5);
+    let mut cursor = v2(480.0, 330.0);
+    let mut bounces = 0;
+    let mut highest = f32::MAX;
+    for f in 0..600 {
+        // Sliding under him, but no faster than a hand would.
+        cursor.x += (w.centroid().x - cursor.x).clamp(-8.0, 8.0);
+        if w.keepy_up(cursor) {
+            bounces += 1;
+        }
+        w.step(FRAME);
+        assert!(!w.resting(), "landed after {bounces} bounces (frame {f})");
+        if bounces > 2 {
+            highest = highest.min(w.centroid().y);
+        }
+        fx.keepy = (bounces > 0).then_some((bounces, 1.0, bounces > 5));
+        if f % 60 == 30 {
+            capture_with_fx(&w, &fx, &mut sheet);
+        }
+    }
+    let c = w.centroid();
+    eprintln!("KEEPY {bounces} bounces in 10 s, highest centroid y {highest:.0}, now {c:?}");
+    assert!(bounces >= 8, "only {bounces} bounces in 10 s");
+    assert!(highest < cursor.y - R0 * 2.5 && highest > 0.0, "bounces peaked at y {highest}");
+    let mut layer = vec![0u32; 600 * 600];
+    assert!(fx.draw(&mut layer, 600, 600, &w).is_some(), "no count drawn");
+    // The cursor goes; he comes down and stays down.
+    for _ in 0..240 {
+        assert!(!w.keepy_up(v2(100.0, 100.0)));
+        w.step(FRAME);
+    }
+    assert!(w.resting(), "never landed once the cursor left");
+    capture_with_fx(&w, &fx, &mut sheet);
+    sheet.save("keepy");
+}
+
 /// His moods, drawn: cross brows, spinning dizzy eyes, asleep with Z's, smoking.
 #[test]
 fn moods_render() {
@@ -951,6 +996,8 @@ fn settings_panel_renders_and_hits() {
             facts: cfg.facts,
             idle: cfg.idle,
             web: cfg.web,
+            keepy: cfg.keepy,
+            keepy_best: cfg.keepy_best,
             provider: cfg.provider.label(),
             model: cfg.model().1,
             key: &key_text,
@@ -988,6 +1035,8 @@ fn settings_panel_renders_and_hits() {
     cfg.look[5] = 0.1;
     frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, Some(Hit::Tune(4)), &chat, None));
     cfg.nootropic = true;
+    cfg.keepy = true;
+    cfg.keepy_best = 23;
     frames.push(view(&cfg, TAB_SETTINGS, None, &SessionState::Closed, None, &chat, None));
     cfg.rainbow = true;
     frames.push(view(&cfg, TAB_LOOK, None, &SessionState::Closed, None, &chat, None));
@@ -1020,16 +1069,17 @@ fn settings_panel_renders_and_hits() {
     assert_eq!(at(S, 30, 49), Some(Hit::Jump));
     assert_eq!(at(S, 30, 61), Some(Hit::Facts));
     assert_eq!(at(S, 30, 73), Some(Hit::Idle));
-    assert_eq!(at(S, 62, 100), Some(Hit::ProviderPrev));
-    assert_eq!(at(S, 150, 100), Some(Hit::ProviderNext));
-    assert_eq!(at(S, 150, 113), Some(Hit::ModelNext));
-    assert_eq!(at(S, 30, 126), Some(Hit::Web));
-    assert_eq!(at(S, 140, 139), Some(Hit::PasteKey));
-    assert_eq!(at(S, 180, 139), Some(Hit::ClearKey));
-    assert_eq!(at(S, 100, 152), None); // status line
+    assert_eq!(at(S, 30, 85), Some(Hit::Keepy));
+    assert_eq!(at(S, 62, 112), Some(Hit::ProviderPrev));
+    assert_eq!(at(S, 150, 112), Some(Hit::ProviderNext));
+    assert_eq!(at(S, 150, 125), Some(Hit::ModelNext));
+    assert_eq!(at(S, 30, 138), Some(Hit::Web));
+    assert_eq!(at(S, 140, 151), Some(Hit::PasteKey));
+    assert_eq!(at(S, 180, 151), Some(Hit::ClearKey));
+    assert_eq!(at(S, 100, 164), None); // status line
     assert_eq!(at(S, 20, 196), Some(Hit::Reset));
     assert_eq!(at(S, 190, 196), Some(Hit::Quit));
-    assert_eq!(panel_hit(140 * 2, 139 * 2, S, false, false, p), None); // no key buttons for the Claude plan
+    assert_eq!(panel_hit(140 * 2, 151 * 2, S, false, false, p), None); // no key buttons for the Claude plan
     // The log shows the newest lines, with a thinking "..." while waiting.
     let lines = chat_lines(&chat, true);
     assert!(lines[0].1.starts_with("> what's") && lines.last().unwrap().1 == "...");
@@ -1045,8 +1095,8 @@ fn settings_panel_renders_and_hits() {
     assert_eq!(at(TAB_LOOK, 100, 196), Some(Hit::ResetLook));
     assert_eq!(at(TAB_LOOK, 100, 34), None); // Settings tab's controls are gone
     assert_eq!(at(TAB_LOOK, 15, 34), Some(Hit::ColourTitle));
-    assert_eq!(at(S, 15, 87), Some(Hit::BrainTitle));
-    assert_eq!(at(S, 100, 87), None);
+    assert_eq!(at(S, 15, 99), Some(Hit::BrainTitle));
+    assert_eq!(at(S, 100, 99), None);
     // Sliders span their range and snap to the standard setting.
     assert_eq!(crate::slider_to_size(slider_at(Hit::Slider, 0, p)), crate::settings::MIN_SIZE);
     assert_eq!(crate::slider_to_size(slider_at(Hit::Slider, 10_000, p)), crate::settings::MAX_SIZE);
@@ -1578,6 +1628,8 @@ fn claude_code_reads_an_image() {
         facts: true,
         idle: true,
         web: true,
+        keepy: false,
+        keepy_best: 0,
         provider: "",
         model: "",
         key: "",
