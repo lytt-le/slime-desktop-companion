@@ -207,6 +207,10 @@ impl Fx {
         }
     }
 
+    pub fn smoking(&self) -> bool {
+        self.cig.is_some()
+    }
+
     /// Asleep or smoking: settled into something, so no other antics.
     pub fn busy(&self) -> bool {
         self.asleep.is_some() || self.cig.is_some()
