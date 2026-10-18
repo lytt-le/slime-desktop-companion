@@ -1009,6 +1009,7 @@ fn settings_panel_renders_and_hits() {
             keepy: cfg.keepy,
             keepy_best: cfg.keepy_best,
             sounds: cfg.sounds,
+            volume: cfg.volume,
             provider: cfg.provider.label(),
             model: cfg.model().1,
             key: &key_text,
@@ -1091,17 +1092,18 @@ fn settings_panel_renders_and_hits() {
     assert_eq!(at(S, 30, 71), Some(Hit::Idle));
     assert_eq!(at(S, 30, 83), Some(Hit::Keepy));
     assert_eq!(at(S, 30, 95), Some(Hit::Sounds));
-    assert_eq!(at(S, 100, 109), Some(Hit::Title(Section::Brain)));
-    assert_eq!(at(S, 62, 121), Some(Hit::ProviderPrev));
-    assert_eq!(at(S, 150, 121), Some(Hit::ProviderNext));
-    assert_eq!(at(S, 150, 134), Some(Hit::ModelNext));
-    assert_eq!(at(S, 30, 147), Some(Hit::Web));
-    assert_eq!(at(S, 140, 160), Some(Hit::PasteKey));
-    assert_eq!(at(S, 180, 160), Some(Hit::ClearKey));
-    assert_eq!(at(S, 100, 173), None); // status line
+    assert_eq!(at(S, 120, 108), Some(Hit::Volume));
+    assert_eq!(at(S, 100, 122), Some(Hit::Title(Section::Brain)));
+    assert_eq!(at(S, 62, 134), Some(Hit::ProviderPrev));
+    assert_eq!(at(S, 150, 134), Some(Hit::ProviderNext));
+    assert_eq!(at(S, 150, 147), Some(Hit::ModelNext));
+    assert_eq!(at(S, 30, 160), Some(Hit::Web));
+    assert_eq!(at(S, 140, 173), Some(Hit::PasteKey));
+    assert_eq!(at(S, 180, 173), Some(Hit::ClearKey));
+    assert_eq!(at(S, 100, 186), None); // status line
     assert_eq!(at(S, 20, 216), Some(Hit::Reset));
     assert_eq!(at(S, 190, 216), Some(Hit::Quit));
-    assert_eq!(panel_hit(140 * 2, 160 * 2, S, false, false, &open, p), None); // no key buttons for the Claude plan
+    assert_eq!(panel_hit(140 * 2, 173 * 2, S, false, false, &open, p), None); // no key buttons for the Claude plan
     // A closed section shows only its title, and the rest moves up.
     let shut = [true, false, true, false];
     assert_eq!(at_c(S, &shut, 30, 47), Some(Hit::Title(Section::Brain)));
@@ -1660,6 +1662,7 @@ fn claude_code_reads_an_image() {
         keepy: false,
         keepy_best: 0,
         sounds: true,
+        volume: 0.7,
         provider: "",
         model: "",
         key: "",
@@ -1805,6 +1808,14 @@ fn sound_effects() {
         assert!(secs > 0.03 && secs < 3.0, "{name}: {secs}s");
         assert!(peak > 0.05 && peak < 4.0, "{name}: peak {peak}");
         assert!(a != b, "{name}: the same every time");
+        if name.starts_with("splat") {
+            // A squelch, not a thud: most of it well above the low end.
+            let mut low = 0.0f32;
+            let lows: Vec<f32> = a.iter().map(|&x| { low += (x - low) * 0.035; low }).collect(); // ~250 Hz one-pole
+            let share = lows.iter().map(|x| x * x).sum::<f32>() / a.iter().map(|x| x * x).sum::<f32>();
+            eprintln!("SFX {name}: {:.0}% below ~250 Hz", share * 100.0);
+            assert!(share < 0.2, "{name} is a thud: {:.0}% low", share * 100.0);
+        }
         // As 16-bit mono .wav, through the same soft clip as the mixer.
         let pcm: Vec<u8> = a.iter().flat_map(|x| (((x * 0.55).tanh() * 32000.0) as i16).to_le_bytes()).collect();
         let mut wav = Vec::new();

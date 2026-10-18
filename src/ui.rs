@@ -2,6 +2,7 @@
 //! pixels (`p` screen pixels per font pixel) into premultiplied BGRA buffers.
 
 use super::font::{advance, pixel, text_width, ADVANCE, GLYPH_H, GLYPH_W};
+use super::settings::VOLUME_DEFAULT as VOLUME_NORMAL;
 
 /// Characters per bubble line, and bubble lines per page.
 pub const BUBBLE_COLS: usize = 26;
@@ -165,6 +166,8 @@ pub enum Hit {
     Idle,
     Keepy,
     Sounds,
+    /// The sound effects' volume slider.
+    Volume,
     Web,
     ProviderPrev,
     ProviderNext,
@@ -236,6 +239,8 @@ pub struct PanelView<'a> {
     pub keepy: bool,
     pub keepy_best: u32,
     pub sounds: bool,
+    /// Sound effects volume, 0..1.
+    pub volume: f32,
     pub provider: &'a str,
     pub model: &'a str,
     pub key: &'a str,
@@ -321,6 +326,7 @@ const fn col(c: usize) -> usize {
 enum Row {
     Title(Section),
     Size,
+    Volume,
     /// A checkbox (its hit says which).
     Check(Hit),
     Provider,
@@ -348,6 +354,7 @@ fn rows(tab: usize, collapsed: &[bool; SECTION_N]) -> Vec<(Row, usize)> {
             Row::Check(Hit::Idle),
             Row::Check(Hit::Keepy),
             Row::Check(Hit::Sounds),
+            Row::Volume,
             Row::Title(Section::Brain),
             Row::Provider,
             Row::Model,
@@ -372,7 +379,7 @@ fn rows(tab: usize, collapsed: &[bool; SECTION_N]) -> Vec<(Row, usize)> {
         out.push((row, y));
         y += match row {
             Row::Title(_) | Row::Check(_) | Row::Tune(_) => 12,
-            Row::Size | Row::Provider | Row::Model | Row::Key => 13,
+            Row::Size | Row::Volume | Row::Provider | Row::Model | Row::Key => 13,
             Row::Swatches => 15,
             Row::Status => 20,
         };
@@ -414,6 +421,7 @@ fn panel_hits(tab: usize, key_buttons: bool, has_shot: bool, collapsed: &[bool; 
         match row {
             Row::Title(s) => v.push((Hit::Title(s), PAD - 1, y - 2, full, GLYPH_H + 3)),
             Row::Size => v.push((Hit::Slider, SLIDER_X0 - 4, y - 3, SLIDER_X1 - SLIDER_X0 + 8, GLYPH_H + 5)),
+            Row::Volume => v.push((Hit::Volume, SLIDER_X0 - 4, y - 3, SLIDER_X1 - SLIDER_X0 + 8, GLYPH_H + 5)),
             Row::Check(h) => v.push((h, PAD - 1, y - 2, full, GLYPH_H + 3)),
             Row::Provider => v.extend([
                 (Hit::ProviderPrev, col(9), y - 2, 3 * ADVANCE, GLYPH_H + 4),
@@ -462,7 +470,7 @@ pub fn panel_hit(x: i32, y: i32, tab: usize, key_buttons: bool, has_shot: bool, 
 
 /// Position (0..1) of slider `hit` for screen x relative to the panel.
 pub fn slider_at(hit: Hit, x: i32, p: usize) -> f32 {
-    let (x0, x1) = if hit == Hit::Slider { (SLIDER_X0, SLIDER_X1) } else { (TUNE_X0, TUNE_X1) };
+    let (x0, x1) = if matches!(hit, Hit::Slider | Hit::Volume) { (SLIDER_X0, SLIDER_X1) } else { (TUNE_X0, TUNE_X1) };
     let fx = x as f32 / p as f32;
     ((fx - x0 as f32) / (x1 - x0) as f32).clamp(0.0, 1.0)
 }
@@ -662,6 +670,12 @@ fn draw_row(cv: &mut Canvas, v: &PanelView, row: Row, y: usize) {
             cv.text(PAD, y, "Size", TEXT);
             cv.slider(SLIDER_X0, SLIDER_X1, y, v.size, v.size_normal, hover(Hit::Slider), Track::Plain);
             let pct = format!("{}%", v.size_pct);
+            cv.text(col(PANEL_COLS) - text_width(&pct) - 3, y, &pct, TEXT);
+        }
+        Row::Volume => {
+            cv.text(PAD, y, "Volume", TEXT);
+            cv.slider(SLIDER_X0, SLIDER_X1, y, v.volume, VOLUME_NORMAL, hover(Hit::Volume), Track::Plain);
+            let pct = format!("{}%", (v.volume * 100.0).round() as u32);
             cv.text(col(PANEL_COLS) - text_width(&pct) - 3, y, &pct, TEXT);
         }
         Row::Check(h) => {

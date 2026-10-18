@@ -4,6 +4,7 @@
 //! They're mixed on a thread of their own and played through the default output, which
 //! is only held open while something's playing (an open stream can keep the PC awake).
 
+use super::settings::VOLUME_DEFAULT;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Media::Audio::{
@@ -61,11 +62,16 @@ impl Sfx {
 }
 const KINDS: usize = 9;
 
+/// A sound to play: what, its seed, in how long (s), and how loud.
+type Cue = (Sfx, u32, f32, f32);
+
 /// Plays sound effects (or quietly does nothing if there's no sound device).
 pub struct Sounds {
     /// Off (turned off in the settings, or he's hidden): nothing plays.
     pub on: bool,
-    tx: Sender<(Sfx, u32, f32)>,
+    /// The volume slider (0..1; the default is as loud as the sounds were made).
+    pub volume: f32,
+    tx: Sender<Cue>,
     last: [Option<Instant>; KINDS],
     seed: u32,
 }
@@ -74,7 +80,13 @@ impl Sounds {
     pub fn new() -> Sounds {
         let (tx, rx) = channel();
         std::thread::spawn(move || mixer(rx));
-        Sounds { on: true, tx, last: [None; KINDS], seed: 0x2468_ace1 }
+        Sounds { on: true, volume: VOLUME_DEFAULT, tx, last: [None; KINDS], seed: 0x2468_ace1 }
+    }
+
+    /// How much to scale the sounds by for the volume slider (loudness follows the
+    /// square, so the slider feels even).
+    fn gain(&self) -> f32 {
+        (self.volume.clamp(0.0, 1.0) / VOLUME_DEFAULT).powi(2)
     }
 
     pub fn play(&mut self, s: Sfx) {
@@ -83,7 +95,7 @@ impl Sounds {
 
     /// Plays `s` in `delay` seconds.
     pub fn play_after(&mut self, s: Sfx, delay: f32) {
-        if !self.on {
+        if !self.on || self.volume <= 0.0 {
             return;
         }
         let (k, gap) = s.kind();
@@ -93,17 +105,17 @@ impl Sounds {
         }
         self.last[k] = Some(now);
         self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let _ = self.tx.send((s, self.seed, delay));
+        let _ = self.tx.send((s, self.seed, delay, self.gain()));
     }
 }
 
 /// The mixing thread: waits for something to play, opens the device, mixes everything
 /// playing into its buffers as they come free, and lets the device go once it's quiet.
-fn mixer(rx: Receiver<(Sfx, u32, f32)>) {
+fn mixer(rx: Receiver<Cue>) {
     let mut voices: Vec<(Vec<f32>, usize)> = Vec::new();
-    let add = |voices: &mut Vec<(Vec<f32>, usize)>, (s, seed, delay): (Sfx, u32, f32)| {
+    let add = |voices: &mut Vec<(Vec<f32>, usize)>, (s, seed, delay, gain): Cue| {
         let mut v = vec![0.0; (delay * RATE as f32) as usize];
-        v.extend(render(s, seed));
+        v.extend(render(s, seed).into_iter().map(|x| x * gain));
         voices.push((v, 0));
     };
     loop {
@@ -291,20 +303,28 @@ pub fn render(s: Sfx, seed: u32) -> Vec<f32> {
     }
 }
 
-/// A wet slap: a low thwop dropping in pitch under a burst of muffled, gurgling noise,
-/// with droplets flicking off a harder hit.
+/// A wet squelch: a sticky, resonant "schlp" sweeping down through the middle, fluttering,
+/// and crackling with tiny bubbles bursting, over only a hint of weight; a harder hit is
+/// longer and flicks droplets off.
 fn splat(n: &mut Noise, k: f32) -> Vec<f32> {
-    let dur = 0.16 + 0.22 * k;
-    let f0 = (150.0 - 50.0 * k) * (0.9 + 0.2 * n.unit());
-    let (mut osc, mut svf) = (Osc::default(), Svf::default());
-    let gurgle = 30.0 + 20.0 * n.unit();
+    let dur = 0.14 + 0.24 * k;
+    let (hi, lo) = (2600.0 + 900.0 * n.unit(), 450.0 + 150.0 * n.unit());
+    let sweep = 0.05 + 0.05 * k;
+    let flutter = 45.0 + 30.0 * n.unit();
+    let (mut schlp, mut ring1, mut ring2, mut osc) = (Svf::default(), Svf::default(), Svf::default(), Osc::default());
     let mut out: Vec<f32> = (0..len(dur))
         .map(|i| {
             let t = time(i);
-            let thwop = osc.step(f0 * (0.45 + 0.55 * (-t / 0.03).exp())) * (-t / 0.06).exp();
-            let (low, _, _) = svf.step(n.next(), 350.0 + 2600.0 * (-t / 0.035).exp(), 0.9);
-            let wet = low * (-t / (0.04 + 0.08 * k)).exp() * (1.0 + 0.6 * (t * gurgle * std::f32::consts::TAU).sin());
-            (0.8 * thwop + 1.6 * wet) * (t / 0.002).min(1.0)
+            // The schlp: resonant noise sliding down, wobbling as it goes.
+            let (_, band, _) = schlp.step(n.next(), lo + (hi - lo) * (-t / sweep).exp(), 3.5);
+            let wet = band * (1.0 + 0.7 * (t * flutter * std::f32::consts::TAU).sin()) * (-t / (0.04 + 0.07 * k)).exp();
+            // Crackle: sparse clicks (bubbles bursting), ringing at a couple of wet pitches.
+            let click = if n.unit() < 0.03 * (-t / (0.03 + 0.05 * k)).exp() { n.next() * 1.5 } else { 0.0 };
+            let (_, c1, _) = ring1.step(click, 1700.0, 6.0);
+            let (_, c2, _) = ring2.step(click, 3300.0, 6.0);
+            // Just a little weight behind it, more for a hard hit.
+            let weight = osc.step(190.0 * (0.7 + 0.3 * (-t / 0.02).exp())) * (-t / 0.025).exp() * 0.3 * k;
+            (1.3 * wet + 0.5 * (c1 + c2) + weight) * (t / 0.003).min(1.0)
         })
         .collect();
     for _ in 0..(k * 6.0) as usize {

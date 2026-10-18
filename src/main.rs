@@ -877,9 +877,10 @@ fn app(respawned: bool) {
                                 }
                                 speech.say("Fresh start! What shall we chat about?");
                             }
-                            Some(h @ (Hit::Slider | Hit::Tune(_))) => {
+                            Some(h @ (Hit::Slider | Hit::Tune(_) | Hit::Volume)) => {
                                 panel_drag = Some(h);
                                 set_slider(&mut cfg, h, ui::slider_at(h, x, font_px));
+                                preview_volume(&mut sounds, &cfg, h);
                             }
                             Some(Hit::Tab(i)) => panel_tab = i,
                             Some(Hit::Swatch(i)) => {
@@ -966,6 +967,7 @@ fn app(respawned: bool) {
                     Event::PanelDrag(x) if panel_drag.is_some() => {
                         if let Some(h) = panel_drag {
                             set_slider(&mut cfg, h, ui::slider_at(h, x, font_px));
+                            preview_volume(&mut sounds, &cfg, h);
                         }
                     }
                     Event::PanelUp if panel_drag.is_some() => {
@@ -1109,6 +1111,7 @@ fn app(respawned: bool) {
             }
             // Sound effects: quiet while he's hidden behind something fullscreen.
             sounds.on = cfg.sounds && hidden_behind.is_none();
+            sounds.volume = cfg.volume;
             pops_heard = (pops_heard - dt).max(0.0);
             for n in world.take_noises() {
                 match n {
@@ -1369,6 +1372,7 @@ fn app(respawned: bool) {
                     keepy: cfg.keepy,
                     keepy_best: cfg.keepy_best,
                     sounds: cfg.sounds,
+                    volume: cfg.volume,
                     provider: cfg.provider.label(),
                     model: cfg.model().1,
                     key: &key_text,
@@ -1453,6 +1457,7 @@ fn app(respawned: bool) {
 fn set_slider(cfg: &mut Settings, h: Hit, t: f32) {
     match h {
         Hit::Slider => cfg.size = slider_to_size(t),
+        Hit::Volume => cfg.volume = if (t - settings::VOLUME_DEFAULT).abs() < 0.025 { settings::VOLUME_DEFAULT } else { (t * 100.0).round() / 100.0 },
         Hit::Tune(i) => {
             if i == settings::HUE {
                 cfg.rainbow = false;
@@ -1461,6 +1466,14 @@ fn set_slider(cfg: &mut Settings, h: Hit, t: f32) {
             cfg.look[i] = if (t - normal).abs() < 0.025 { normal } else { t };
         }
         _ => {}
+    }
+}
+
+/// Dragging the volume slider: a blorp at the new level, to hear how loud it is.
+fn preview_volume(sounds: &mut sound::Sounds, cfg: &Settings, h: Hit) {
+    if h == Hit::Volume {
+        sounds.volume = cfg.volume;
+        sounds.play(Sfx::Blorp);
     }
 }
 

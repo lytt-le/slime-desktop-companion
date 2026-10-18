@@ -9,6 +9,8 @@ use super::ui::{SECTIONS, SECTION_N};
 
 pub const MIN_SIZE: f32 = 0.5;
 pub const MAX_SIZE: f32 = 2.5;
+/// Sound effects volume to start with (0..1).
+pub const VOLUME_DEFAULT: f32 = 0.7;
 
 /// The Customisation sliders: (settings key, label). Each is 0..1 with the standard
 /// slime at 0.5 (hue: the classic green).
@@ -72,15 +74,16 @@ pub struct Settings {
     /// a row so far.
     pub keepy: bool,
     pub keepy_best: u32,
-    /// Sound effects (splats, squelches, boings...).
+    /// Sound effects (splats, squelches, boings...), and how loud (0..1).
     pub sounds: bool,
+    pub volume: f32,
     /// Panel sections closed with their titles (in `ui::SECTIONS` order).
     pub collapsed: [bool; SECTION_N],
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { provider: Provider::ClaudePlan, models: [0; 3], size: 1.0, jump: true, facts: true, idle: true, web: true, look: LOOK_DEFAULT, rainbow: false, nootropic: false, keepy: false, keepy_best: 0, sounds: true, collapsed: [false; SECTION_N] }
+        Settings { provider: Provider::ClaudePlan, models: [0; 3], size: 1.0, jump: true, facts: true, idle: true, web: true, look: LOOK_DEFAULT, rainbow: false, nootropic: false, keepy: false, keepy_best: 0, sounds: true, volume: VOLUME_DEFAULT, collapsed: [false; SECTION_N] }
     }
 }
 
@@ -151,6 +154,7 @@ impl Settings {
             "keepy_uppies": self.keepy,
             "keepy_uppies_best": self.keepy_best,
             "sound_effects": self.sounds,
+            "volume": self.volume,
             "collapsed": SECTIONS.iter().zip(self.collapsed).filter(|s| s.1).map(|s| s.0.label()).collect::<Vec<_>>(),
             "look": LOOK.iter().zip(self.look).map(|(l, v)| (l.0.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
         })
@@ -181,6 +185,9 @@ impl Settings {
         s.keepy = v["keepy_uppies"].as_bool().unwrap_or(s.keepy);
         s.keepy_best = v["keepy_uppies_best"].as_u64().map_or(s.keepy_best, |n| n.min(u32::MAX as u64) as u32);
         s.sounds = v["sound_effects"].as_bool().unwrap_or(s.sounds);
+        if let Some(vol) = v["volume"].as_f64() {
+            s.volume = (vol as f32).clamp(0.0, 1.0);
+        }
         if let Some(names) = v["collapsed"].as_array() {
             for (i, sec) in SECTIONS.iter().enumerate() {
                 s.collapsed[i] = names.iter().any(|n| n.as_str() == Some(sec.label()));
@@ -231,6 +238,7 @@ mod tests {
         s.keepy = true;
         s.keepy_best = 17;
         s.sounds = false;
+        s.volume = 0.35;
         s.collapsed[1] = true;
         s.look[3] = 0.9;
         s.look[HUE] = 0.6;
