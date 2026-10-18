@@ -1679,3 +1679,32 @@ fn claude_code_reads_an_image() {
     eprintln!("Claude read: {answer:?}");
     assert!(answer.unwrap().to_uppercase().contains("SLIME"));
 }
+
+/// Hanging on the pin, he stays put: the body doesn't hop a cell back and forth chasing
+/// the pin point (it used to, every few frames).
+#[test]
+fn pinned_holds_still() {
+    let mut w = world_at(v2(320.0, 330.0));
+    let mut sheet = Sheet::new();
+    run(&mut w, 120, &mut sheet, 0);
+    let at = w.centroid() - v2(0.0, R0 * 0.5);
+    w.start_grab(at);
+    let pin_at = v2(400.0, 150.0);
+    for k in 1..=20 {
+        w.drag_to(at + (pin_at - at) * (k as f32 / 20.0));
+        w.step(FRAME);
+    }
+    assert!(w.pin());
+    run(&mut w, 120, &mut sheet, 0);
+    let mut prev = w.centroid();
+    let (mut path, mut hops) = (0.0, 0);
+    for _ in 0..600 {
+        w.step(FRAME);
+        let c = w.centroid();
+        path += (c - prev).len();
+        hops += ((c - prev).len() > 1.0) as u32;
+        prev = c;
+    }
+    eprintln!("PX pinned: centroid travelled {path:.1}px in 10s, {hops} hops");
+    assert!(hops <= 3 && path < 40.0, "shaking on the pin: {path:.1}px, {hops} hops");
+}
