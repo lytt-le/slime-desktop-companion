@@ -165,6 +165,12 @@ impl Fx {
         }
     }
 
+    /// Being poked at: cross for a bit.
+    pub fn annoyed(&mut self) {
+        self.angry = ANGRY_FOR;
+        self.wake();
+    }
+
     /// Being shaken (`shake` from `World::shake`).
     pub fn shaken(&mut self, shake: f32) {
         if shake > DIZZY_SHAKE {

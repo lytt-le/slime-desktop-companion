@@ -1680,6 +1680,46 @@ fn claude_code_reads_an_image() {
     assert!(answer.unwrap().to_uppercase().contains("SLIME"));
 }
 
+/// Clicked too many times, he bursts: goo sprays all round, leaving a little seed that
+/// slowly grows back (taking seconds, not a frame), soaking up goo near him, until he's
+/// whole again about where he was.
+#[test]
+fn bursts_and_reforms() {
+    let mut w = world_at(v2(320.0, 330.0));
+    let mut sheet = Sheet::new();
+    run(&mut w, 120, &mut sheet, 0);
+    let (start, at) = (w.slime_count(), w.centroid());
+    sheet.capture(&w);
+    w.burst();
+    assert!(w.reforming());
+    let seed = w.slime_count();
+    let (x0, _, x1, _) = w.goo_bounds().unwrap();
+    eprintln!("PX burst: {start} cells -> seed {seed}, goo across {} cells", x1 - x0);
+    assert!(seed * 5 < start, "too much left after bursting: {seed} of {start}");
+    let mut spread = 0;
+    let mut whole_at = None;
+    for f in 0..900 {
+        w.step(FRAME);
+        if let Some((x0, _, x1, _)) = w.goo_bounds() {
+            spread = spread.max(x1 - x0);
+        }
+        if [2, 8, 20, 60, 120, 180, 240, 300, 420].contains(&f) {
+            sheet.capture(&w);
+        }
+        if whole_at.is_none() && !w.reforming() {
+            whole_at = Some(f as f32 * FRAME);
+        }
+    }
+    sheet.save("burst");
+    let whole_at = whole_at.expect("never grew back");
+    let c = w.centroid();
+    eprintln!("PX burst: goo spread {spread} cells; whole again after {whole_at:.1}s at {c:?} ({} cells)", w.slime_count());
+    assert!(spread as f32 * CELL > R0 * 4.0, "the goo hardly flew: {spread} cells");
+    assert!(whole_at > 3.0 && whole_at < 9.0, "grew back in {whole_at:.1}s");
+    assert!(w.intact() > 0.9);
+    assert!((c - at).len() < R0, "came back somewhere else: {c:?} vs {at:?}");
+}
+
 /// Hanging on the pin, he stays put: the body doesn't hop a cell back and forth chasing
 /// the pin point (it used to, every few frames).
 #[test]

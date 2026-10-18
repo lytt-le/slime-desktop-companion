@@ -60,6 +60,20 @@ const TRIPLE_GAP: f32 = 0.5;
 const RAINBOW_LAP: f32 = 6.0;
 /// Keepy uppies: how long the count stays up after he lands.
 const KEEPY_LINGER: f32 = 1.5;
+/// Spam-clicking him: a tap is a press and release this quick (s) without dragging him
+/// off (px); taps this close together (s) add up, and he gets cross, then bursts.
+const TAP_HOLD: f32 = 0.3;
+const TAP_SLOP: f32 = 12.0;
+const TAP_GAP: f32 = 0.45;
+const CROSS_TAPS: u32 = 3;
+const BURST_TAPS: u32 = 8;
+/// What he says once he's back together after bursting.
+const REFORMED: [&str; 4] = [
+    "Ow. I'm back together. Please don't do that again.",
+    "That was a lot of clicking.",
+    "Phew, all of me is back. I think.",
+    "Okay, I'm in one piece again. Rude.",
+];
 
 enum Event {
     GrabStart,
@@ -269,7 +283,7 @@ impl Eyes {
 
     fn anchors(world: &World, look: V2) -> [V2; 2] {
         let c = world.to_cell(world.centroid());
-        let r = world.radius();
+        let r = world.face_radius();
         [c + v2(-0.32 * r, -0.12 * r) + look, c + v2(0.32 * r, -0.12 * r) + look]
     }
 
@@ -283,7 +297,7 @@ impl Eyes {
                 self.pos[i] += self.vel[i] * h;
             }
             let off = self.pos[i] - a[i];
-            let max = world.radius() * 0.15;
+            let max = world.face_radius() * 0.15;
             if off.len() > max {
                 self.pos[i] = a[i] + off * (max / off.len());
             }
@@ -301,7 +315,7 @@ impl Eyes {
     }
 
     pub fn blocks(&self, world: &World) -> [EyeBlock; 2] {
-        let r = world.radius();
+        let r = world.face_radius();
         let w = ((r * 0.12).round() as i32).max(2);
         let h = if self.blink > 0.0 { 1 } else { ((r * 0.22).round() as i32).max(3) };
         let s = ((r / 18.0).round() as i32).max(1);
@@ -586,6 +600,11 @@ fn app(respawned: bool) {
         let mut keepy_run = 0u32;
         let mut keepy_shown = (0u32, 0.0f32);
         let mut keepy_record = false;
+        // Spam-clicking: when and where the button went down on him, the run of quick taps
+        // (how many, when the last was), and whether he's growing back from a burst.
+        let mut press = (Instant::now(), V2::ZERO);
+        let mut taps = (0u32, Instant::now());
+        let mut reforming = false;
         // The current provider's key (re-read when it may have changed).
         let mut key_cache: Option<Option<(String, brain::KeySource)>> = None;
         let mut greeted = false;
@@ -646,6 +665,7 @@ fn app(respawned: bool) {
                         world.start_grab(p);
                         trail.clear();
                         trail.push_back((Instant::now(), p));
+                        press = (Instant::now(), p);
                     }
                     // Pinned: letting go leaves him hanging on the pin.
                     Event::GrabEnd if world.pinned => {}
@@ -664,7 +684,23 @@ fn app(respawned: bool) {
                             .unwrap_or(V2::ZERO);
                         let max = 3500.0 * dpi;
                         let throw = if throw.len() > max { throw * (max / throw.len()) } else { throw };
+                        // (Releasing the mouse capture sends a second GrabEnd: only the first counts.)
+                        let held = world.grab.is_some();
                         world.release(throw);
+                        // A quick tap: enough of them in a row and he gets cross, then bursts.
+                        // (Not while he's still growing back from the last time.)
+                        let tap = held && now.duration_since(press.0).as_secs_f32() < TAP_HOLD && (p - press.1).len() < TAP_SLOP * dpi;
+                        if tap && !world.reforming() {
+                            let quick = now.duration_since(taps.1).as_secs_f32() < TAP_GAP;
+                            taps = (if quick { taps.0 + 1 } else { 1 }, now);
+                            if taps.0 >= BURST_TAPS {
+                                taps.0 = 0;
+                                world.burst();
+                            } else if taps.0 >= CROSS_TAPS {
+                                fx.annoyed();
+                                world.poke(-3.0);
+                            }
+                        }
                     }
                     Event::Click(p) => {
                         let (ox, oy, w, h) = drawn;
@@ -1090,12 +1126,19 @@ fn app(respawned: bool) {
                 }
             }
             idle_for += dt;
+            // Back in one piece after bursting.
+            if reforming && !world.reforming() {
+                speech.say(REFORMED[(rng.next() * REFORMED.len() as f32) as usize % REFORMED.len()]);
+                world.poke(3.0);
+            }
+            reforming = world.reforming();
             // Safety net: if he's somehow off every screen, or mostly gone, bring him back.
             let c = world.centroid();
             let seen = scan.monitors.iter().any(|m| {
                 c.x >= m.left as f32 && c.x < m.right as f32 && c.y >= m.top as f32 && c.y < m.bottom as f32
             });
-            if world.grab.is_none() && (!seen || world.intact() < 0.25) {
+            // (Growing back from a burst isn't mostly gone.)
+            if world.grab.is_none() && (!seen || (world.intact() < 0.25 && !world.reforming())) {
                 lost_for += dt;
             } else {
                 lost_for = 0.0;

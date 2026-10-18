@@ -82,6 +82,17 @@ const MAX_STEP: f32 = 12.0;
 /// of that speed goes sideways when the cursor catches him right at the edge.
 const KEEPY_APEX: f32 = 5.0;
 const KEEPY_SIDE: f32 = 0.6;
+/// Bursting (clicked too many times): the share of the body left as a seed in the middle,
+/// how fast the rest flies off (cells per substep at the rim) and up, and how long he
+/// takes to grow back from the seed (s).
+const BURST_SEED: f32 = 0.08;
+const BURST_SPEED: f32 = 2.5;
+const BURST_LIFT: f32 = 1.5;
+const REFORM_SECS: f32 = 6.0;
+/// While he grows back, goo on the floor near him creeps home to be soaked up: chance
+/// per frame of a step, and how far off it notices (radii).
+const CREEP: f32 = 0.3;
+const CREEP_REACH: f32 = 6.0;
 /// Cells further than this many radii from the body drop off as goo.
 const DETACH: f32 = 2.4;
 const GOO_LIFE: (f32, f32) = (5.0, 8.0);
@@ -290,6 +301,8 @@ pub struct World {
     pub rest_bias: f32,
     /// Pinned to the screen: held where the grab was, without anyone holding him.
     pub pinned: bool,
+    /// Burst, and slowly growing back: seconds since, and the size of the seed left.
+    reform: Option<(f32, usize)>,
 }
 
 /// Fractional window-ride offsets per platform id.
@@ -351,6 +364,7 @@ impl World {
             shake: 0.0,
             rest_bias: 0.0,
             pinned: false,
+            reform: None,
         }
     }
 
@@ -450,6 +464,73 @@ impl World {
         self.base_count = (self.slime_count() as f32 / (self.scale * self.scale)) as usize;
         self.grab = None;
         self.pinned = false;
+        self.reform = None;
+    }
+
+    /// Bursts him: all but a little seed in the middle flies off as goo, and he slowly
+    /// grows back from the seed, soaking up the goo that lands near him.
+    pub fn burst(&mut self) {
+        let (c, _) = self.body();
+        let r = self.radius().max(1.0);
+        self.grab = None;
+        self.pinned = false;
+        self.antic = None;
+        self.vb = V2::ZERO;
+        self.fb = V2::ZERO;
+        let mut body: Vec<usize> = (0..self.ents.len()).filter(|&k| self.ents[k].kind != Kind::Goo).collect();
+        let dist = |e: &Ent| (v2(e.x as f32 + 0.5, e.y as f32 + 0.5) - c).len2();
+        body.sort_by(|&a, &b| dist(&self.ents[a]).total_cmp(&dist(&self.ents[b])));
+        let keep = ((body.len() as f32 * BURST_SEED) as usize).max(1).min(body.len());
+        // Outermost first, each moved out to about twice its distance from the middle, so
+        // the droplets start apart and don't block each other (not through a window edge).
+        for &k in body[keep..].iter().rev() {
+            let e = self.ents[k];
+            let d = v2(e.x as f32 + 0.5, e.y as f32 + 0.5) - c;
+            let to = c + d * 2.0 + v2(self.rand() - 0.5, self.rand() - 0.5);
+            let (tx, ty) = (to.x.floor() as i32, to.y.floor() as i32);
+            let through = (e.y.min(ty) + 1..=e.y.max(ty)).any(|y| self.idx(tx, y).is_some_and(|i| self.plat[i] != 0));
+            if let Some(i) = self.idx(tx, ty).filter(|&i| !self.void[i] && self.occ[i] == 0 && !through) {
+                self.occ[(e.y * self.w + e.x) as usize] = 0;
+                self.occ[i] = k as u32 + 1;
+                self.ents[k].x = tx;
+                self.ents[k].y = ty;
+            }
+            let lift = BURST_LIFT * (0.5 + self.rand());
+            let life = (GOO_LIFE.0 + self.rand() * (GOO_LIFE.1 - GOO_LIFE.0)) * self.tune.goo_life * 1.5;
+            let o = &mut self.ents[k];
+            o.kind = Kind::Goo;
+            o.v = d * (BURST_SPEED / r) + v2(0.0, -lift);
+            o.f = V2::ZERO;
+            o.stuck = None;
+            o.age = 0.0;
+            o.life = life;
+        }
+        self.reform = Some((0.0, keep));
+        self.regrow = 0.0;
+        self.shake = 0.0;
+        self.squash_v += 6.0;
+    }
+
+    /// Burst and still growing back.
+    pub fn reforming(&self) -> bool {
+        self.reform.is_some()
+    }
+
+    /// How big he may be by now while growing back (cells): from the seed up to full
+    /// size steadily over `REFORM_SECS`, whether by growing or soaking up goo.
+    fn reform_cap(&self) -> Option<usize> {
+        let (t, seed) = self.reform?;
+        let target = self.target_count().max(seed);
+        Some(seed + ((target - seed) as f32 * (t / REFORM_SECS).min(1.0)) as usize)
+    }
+
+    /// The radius to draw his face at: smaller while he's growing back.
+    pub fn face_radius(&self) -> f32 {
+        if self.reform.is_some() {
+            self.radius() * self.intact().clamp(0.0, 1.0).sqrt()
+        } else {
+            self.radius()
+        }
     }
 
     pub fn clear_goo(&mut self) {
@@ -1784,7 +1865,8 @@ impl World {
                 Kind::Goo if e.age > 0.4 => {
                     // Goo touching the body is soaked back up.
                     let touching = (-1..=1).any(|dy| (-1..=1).any(|dx| self.at(e.x + dx, e.y + dy) == Some(Kind::Slime)));
-                    if touching && self.slime_count() < self.target_count() + 20 {
+                    let cap = self.reform_cap().unwrap_or(self.target_count() + 20);
+                    if touching && self.slime_count() < cap {
                         self.ents[k].kind = Kind::Slime;
                         self.ents[k].stuck = None;
                         self.ents[k].v = V2::ZERO;
@@ -1990,11 +2072,41 @@ impl World {
             }
         }
 
-        // Regrow toward the target size (also how growing/shrinking works).
+        // Growing back after a burst: goo on the floor round him creeps home (and stays
+        // fresh while it does), to be soaked up when it touches him.
+        if let Some((t, seed)) = self.reform {
+            self.reform = Some((t + dt, seed));
+            let bottom = self.body_bottom;
+            for k in 0..self.ents.len() {
+                let e = self.ents[k];
+                if e.kind != Kind::Goo || e.stuck.is_none() || (e.y - bottom).abs() > 2 {
+                    continue;
+                }
+                let dx = c.x - (e.x as f32 + 0.5);
+                if dx.abs() < 1.0 || dx.abs() > r * CREEP_REACH || self.rand() > CREEP {
+                    continue;
+                }
+                let sx = dx.signum() as i32;
+                let next = Ent { x: e.x + sx, ..e };
+                let footing = self.supported(&next).or_else(|| (self.at(next.x, next.y + 1) == Some(Kind::Goo)).then_some(-1));
+                if let Some(id) = footing.filter(|_| self.free(&e, sx, 0)) {
+                    self.step_to(k, sx, 0);
+                    self.ents[k].stuck = Some(id);
+                    self.ents[k].age = e.age.min(e.life * 0.5);
+                }
+            }
+        }
+
+        // Regrow toward the target size (also how growing/shrinking works); slowly when
+        // growing back from a burst.
         let target = self.target_count();
         let count = self.slime_count();
-        if count + 2 < target {
-            self.regrow += dt * (40.0 + (target - count) as f32 * 2.0);
+        if self.reform.is_some() && count + 2 >= target {
+            self.reform = None;
+        }
+        let cap = self.reform_cap().unwrap_or(target);
+        if count + 2 < cap {
+            self.regrow += dt * (40.0 + (cap - count) as f32 * 2.0);
             while self.regrow >= 1.0 {
                 self.regrow -= 1.0;
                 self.grow_one();
@@ -2047,12 +2159,14 @@ impl World {
     /// around it, low down, inside the dome), so regrowth smooths rather than roughens.
     fn grow_one(&mut self) {
         let mut best: Option<((i32, i32), V2, f32)> = None;
+        // (Sampled from the body, which may be a small seed in a lot of goo.)
+        let body: Vec<usize> = (0..self.ents.len()).filter(|&k| self.ents[k].kind == Kind::Slime).collect();
+        if body.is_empty() {
+            return;
+        }
         for _ in 0..24 {
-            let k = (self.rand() * self.ents.len() as f32) as usize % self.ents.len().max(1);
+            let k = body[(self.rand() * body.len() as f32) as usize % body.len()];
             let e = self.ents[k];
-            if e.kind != Kind::Slime {
-                continue;
-            }
             let (dx, dy) = [(0, -1), (-1, 0), (1, 0), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)][(self.rand() * 8.0) as usize % 8];
             let p = (e.x + dx, e.y + dy);
             if !self.free(&e, dx, dy) || self.at(p.0, p.1).is_some() {
