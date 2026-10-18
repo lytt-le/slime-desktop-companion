@@ -1808,13 +1808,18 @@ fn sound_effects() {
         assert!(secs > 0.03 && secs < 3.0, "{name}: {secs}s");
         assert!(peak > 0.05 && peak < 4.0, "{name}: peak {peak}");
         assert!(a != b, "{name}: the same every time");
-        if name.starts_with("splat") {
-            // A squelch, not a thud: most of it well above the low end.
+        if ["splat_soft", "splat_hard", "squelch", "slurp"].contains(&name) {
+            // Wet: messy sidebands and hiss well up the spectrum (not a pure low tone), and
+            // the compressor's brought the tail up close to the body of the sound.
+            let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len().max(1) as f32).sqrt();
             let mut low = 0.0f32;
-            let lows: Vec<f32> = a.iter().map(|&x| { low += (x - low) * 0.035; low }).collect(); // ~250 Hz one-pole
-            let share = lows.iter().map(|x| x * x).sum::<f32>() / a.iter().map(|x| x * x).sum::<f32>();
-            eprintln!("SFX {name}: {:.0}% below ~250 Hz", share * 100.0);
-            assert!(share < 0.2, "{name} is a thud: {:.0}% low", share * 100.0);
+            let highs: Vec<f32> = a.iter().map(|&x| { low += (x - low) * 0.13; x - low }).collect(); // above ~1 kHz
+            let bright = rms(&highs) / rms(&a);
+            let q = a.len() / 4;
+            let tail = rms(&a[q * 2..q * 3]) / rms(&a[..q]).max(1e-6);
+            eprintln!("SFX {name}: {:.0}% of the level above ~1 kHz, middle at {:.0}% of the start", bright * 100.0, tail * 100.0);
+            assert!(bright > 0.15, "{name}: too pure and low ({:.0}% above 1 kHz)", bright * 100.0);
+            assert!(tail > 0.25, "{name}: the tail dies away ({:.0}%)", tail * 100.0);
         }
         // As 16-bit mono .wav, through the same soft clip as the mixer.
         let pcm: Vec<u8> = a.iter().flat_map(|x| (((x * 0.55).tanh() * 32000.0) as i16).to_le_bytes()).collect();

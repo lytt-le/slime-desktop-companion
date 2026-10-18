@@ -286,6 +286,132 @@ fn mix_in(dst: &mut Vec<f32>, src: &[f32], at: usize, gain: f32) {
     }
 }
 
+/// One wet, organic voice (FM and noise): a low sine carrier phase-modulated by a sine
+/// at an awkward ratio, for messy sidebands, with a layer of hissing noise. A fast,
+/// random sample-and-hold "chaos" signal drives the modulation index, the noise level
+/// and the filter cutoff all at once, and the result is squashed hard by a compressor
+/// (bringing up the tiny tails, which is what sounds wet) and lightly crushed.
+struct Wet {
+    dur: f32,
+    /// Carrier pitch at the start and end (Hz), and how the glide's shaped (1 = even;
+    /// higher bends sooner).
+    pitch: (f32, f32),
+    bend: f32,
+    /// Modulator : carrier ratio.
+    ratio: f32,
+    /// Modulation index at no chaos and at full chaos.
+    index: (f32, f32),
+    /// How often the chaos jumps (per second), and how much it rules (0 steady .. 1 wild).
+    chaos_hz: f32,
+    chaos: f32,
+    /// Noise in the mix, and the filter's cutoff range (Hz) as the chaos moves it.
+    noise: f32,
+    cutoff: (f32, f32),
+    /// Attack and decay (s), and a fade-out over the last part (s).
+    attack: f32,
+    decay: f32,
+    release: f32,
+    /// Wobble: a steady rocking of pitch (rate Hz, depth) and loudness (depth 0..1).
+    rock: (f32, f32, f32),
+    /// Downsampling (hold each sample this many times) and bits kept.
+    hold: usize,
+    bits: u32,
+}
+
+impl Default for Wet {
+    fn default() -> Wet {
+        Wet {
+            dur: 0.2,
+            pitch: (110.0, 60.0),
+            bend: 1.0,
+            ratio: 2.71,
+            index: (1.0, 6.0),
+            chaos_hz: 120.0,
+            chaos: 1.0,
+            noise: 0.35,
+            cutoff: (500.0, 3500.0),
+            attack: 0.002,
+            decay: 0.08,
+            release: 0.02,
+            rock: (0.0, 0.0, 0.0),
+            hold: 2,
+            bits: 10,
+        }
+    }
+}
+
+fn wet(n: &mut Noise, w: &Wet) -> Vec<f32> {
+    use std::f32::consts::TAU;
+    let total = len(w.dur);
+    let (mut car, mut modu) = (0.0f32, 0.0f32);
+    let (mut lp, mut noise_lp) = (Svf::default(), Svf::default());
+    // Sample-and-hold chaos, slewed over a couple of milliseconds so it doesn't click.
+    let (mut target, mut chaos) = (n.unit(), 0.5f32);
+    let slew = 1.0 - (-1.0 / (0.002 * RATE as f32)).exp();
+    let every = (RATE as f32 / w.chaos_hz.max(1.0)) as usize;
+    let mut out: Vec<f32> = (0..total)
+        .map(|i| {
+            let t = time(i);
+            if i % every.max(1) == 0 {
+                target = n.unit();
+            }
+            chaos += (target - chaos) * slew;
+            let c = 0.5 + (chaos - 0.5) * w.chaos;
+            let rock = (t * w.rock.0 * TAU).sin();
+            let along = (t / w.dur).powf(1.0 / w.bend.max(0.05));
+            let f = w.pitch.0 * (w.pitch.1 / w.pitch.0).powf(along) * (1.0 + w.rock.1 * rock);
+            let env = (t / w.attack.max(1e-4)).min(1.0) * (-t / w.decay).exp() * ((w.dur - t) / w.release.max(1e-4)).clamp(0.0, 1.0);
+            // FM: the modulation index follows the chaos and fades with the sound.
+            car = (car + f / RATE as f32).fract();
+            modu = (modu + f * w.ratio / RATE as f32).fract();
+            let index = (w.index.0 + (w.index.1 - w.index.0) * c) * (0.4 + 0.6 * env);
+            let fm = (car * TAU + index * (modu * TAU).sin()).sin();
+            // Hiss: noise, louder and brighter when the chaos is up.
+            let (hiss, _, _) = noise_lp.step(n.next(), 1500.0 + 4000.0 * c, 0.7);
+            let mix = fm + w.noise * 2.0 * c * hiss;
+            let (low, _, _) = lp.step(mix, w.cutoff.0 + (w.cutoff.1 - w.cutoff.0) * c, 1.1);
+            low * env * (1.0 - w.rock.2 * (0.5 - 0.5 * rock))
+        })
+        .collect();
+    compress(&mut out);
+    crush(&mut out, w.hold, w.bits);
+    out
+}
+
+/// A heavy compressor (fast attack, short release, well below the peak) with the result
+/// brought back up to full: the faint tails come up close to the body of the sound.
+fn compress(x: &mut [f32]) {
+    let peak = x.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak <= 0.0 {
+        return;
+    }
+    let (threshold, ratio) = (peak * 0.1, 8.0);
+    let att = 1.0 - (-1.0 / (0.001 * RATE as f32)).exp();
+    let rel = 1.0 - (-1.0 / (0.04 * RATE as f32)).exp();
+    let mut level = 0.0f32;
+    for s in x.iter_mut() {
+        let a = s.abs();
+        level += (a - level) * if a > level { att } else { rel };
+        if level > threshold {
+            *s *= (threshold / level).powf(1.0 - 1.0 / ratio);
+        }
+    }
+    let after = x.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    x.iter_mut().for_each(|s| *s *= 0.9 / after.max(1e-6));
+}
+
+/// Downsamples (holds each sample `hold` times) and keeps `bits` bits: a little grit.
+fn crush(x: &mut [f32], hold: usize, bits: u32) {
+    let q = (1u32 << (bits - 1)) as f32;
+    let mut held = 0.0;
+    for (i, s) in x.iter_mut().enumerate() {
+        if i % hold.max(1) == 0 {
+            held = (*s * q).round() / q;
+        }
+        *s = held;
+    }
+}
+
 /// Renders one sound effect (mono samples at `RATE`, roughly -1..1), a little different
 /// each time for each `seed`.
 pub fn render(s: Sfx, seed: u32) -> Vec<f32> {
@@ -303,119 +429,131 @@ pub fn render(s: Sfx, seed: u32) -> Vec<f32> {
     }
 }
 
-/// A wet squelch: a sticky, resonant "schlp" sweeping down through the middle, fluttering,
-/// and crackling with tiny bubbles bursting, over only a hint of weight; a harder hit is
-/// longer and flicks droplets off.
+/// Splat: a short, wild squelch dropping in pitch; a harder hit is longer, wetter and
+/// louder, with droplets flicking off.
 fn splat(n: &mut Noise, k: f32) -> Vec<f32> {
-    let dur = 0.14 + 0.24 * k;
-    let (hi, lo) = (2600.0 + 900.0 * n.unit(), 450.0 + 150.0 * n.unit());
-    let sweep = 0.05 + 0.05 * k;
-    let flutter = 45.0 + 30.0 * n.unit();
-    let (mut schlp, mut ring1, mut ring2, mut osc) = (Svf::default(), Svf::default(), Svf::default(), Osc::default());
-    let mut out: Vec<f32> = (0..len(dur))
-        .map(|i| {
-            let t = time(i);
-            // The schlp: resonant noise sliding down, wobbling as it goes.
-            let (_, band, _) = schlp.step(n.next(), lo + (hi - lo) * (-t / sweep).exp(), 3.5);
-            let wet = band * (1.0 + 0.7 * (t * flutter * std::f32::consts::TAU).sin()) * (-t / (0.04 + 0.07 * k)).exp();
-            // Crackle: sparse clicks (bubbles bursting), ringing at a couple of wet pitches.
-            let click = if n.unit() < 0.03 * (-t / (0.03 + 0.05 * k)).exp() { n.next() * 1.5 } else { 0.0 };
-            let (_, c1, _) = ring1.step(click, 1700.0, 6.0);
-            let (_, c2, _) = ring2.step(click, 3300.0, 6.0);
-            // Just a little weight behind it, more for a hard hit.
-            let weight = osc.step(190.0 * (0.7 + 0.3 * (-t / 0.02).exp())) * (-t / 0.025).exp() * 0.3 * k;
-            (1.3 * wet + 0.5 * (c1 + c2) + weight) * (t / 0.003).min(1.0)
-        })
-        .collect();
-    for _ in 0..(k * 6.0) as usize {
-        let at = len(0.03 + 0.2 * n.unit());
-        let drop = plip(n, 0.12 + 0.12 * k);
-        mix_in(&mut out, &drop, at, 1.0);
+    let w = Wet {
+        dur: 0.12 + 0.24 * k,
+        pitch: ((120.0 + 40.0 * n.unit()) * (1.0 - 0.2 * k), 55.0 + 15.0 * n.unit()),
+        bend: 2.5,
+        ratio: if n.unit() < 0.5 { 2.71 } else { 3.14 },
+        index: (1.5, 5.0 + 3.0 * k),
+        chaos_hz: 110.0 + 80.0 * n.unit(),
+        noise: 0.3 + 0.2 * k,
+        cutoff: (500.0, 2500.0 + 2000.0 * k),
+        decay: 0.05 + 0.08 * k,
+        ..Wet::default()
+    };
+    let mut out = wet(n, &w);
+    for _ in 0..(k * 5.0) as usize {
+        let drop = plip(n, 0.15 + 0.15 * k);
+        mix_in(&mut out, &drop, len(0.04 + 0.2 * n.unit()), 1.0);
     }
-    let gain = 0.3 + 0.7 * k;
+    let gain = 0.45 + 0.8 * k;
     out.iter_mut().for_each(|s| *s *= gain);
     out
 }
 
-/// Pulled at: resonant noise sweeping up, wet and gurgly.
+/// Picked up: a sucking squelch, pulling upward.
 fn squelch(n: &mut Noise) -> Vec<f32> {
-    let (dur, from, to) = (0.22, 300.0 + 100.0 * n.unit(), 1600.0 + 600.0 * n.unit());
-    let mut svf = Svf::default();
-    let mut wob = 0.0f32;
-    (0..len(dur))
-        .map(|i| {
-            let t = time(i);
-            let cut = from * (to / from).powf((t / dur).min(1.0));
-            let (_, band, _) = svf.step(n.next(), cut, 6.0);
-            if i % 600 == 0 {
-                wob = 0.4 + 0.6 * n.unit();
-            }
-            let env = (t / 0.008).min(1.0) * (-t / 0.07).exp();
-            band * env * wob * 1.4
-        })
-        .collect()
+    let w = Wet {
+        dur: 0.24,
+        pitch: (65.0 + 15.0 * n.unit(), 150.0 + 40.0 * n.unit()),
+        bend: 0.7,
+        ratio: 3.14,
+        index: (2.0, 7.0),
+        chaos_hz: 70.0 + 30.0 * n.unit(),
+        noise: 0.4,
+        cutoff: (400.0, 3000.0),
+        attack: 0.01,
+        decay: 0.12,
+        release: 0.05,
+        ..Wet::default()
+    };
+    wet(n, &w).into_iter().map(|s| s * 0.55).collect()
 }
 
-/// A bloop: a round tone bending up, like a bubble leaving a jar of slime.
+/// A bloop: a bubble of slime rising and bursting, the pitch bending up.
 fn blorp(n: &mut Noise) -> Vec<f32> {
-    let f0 = 170.0 + 90.0 * n.unit();
-    let mut osc = Osc::default();
-    let mut osc2 = Osc::default();
-    (0..len(0.2))
-        .map(|i| {
-            let t = time(i);
-            let f = f0 * (1.0 + 1.3 * (1.0 - (-t / 0.045).exp()));
-            let env = (t / 0.005).min(1.0) * (-t / 0.06).exp();
-            (osc.step(f) + 0.3 * osc2.step(f * 2.0)) * env * 0.55
-        })
-        .collect()
+    let w = Wet {
+        dur: 0.17,
+        pitch: (140.0 + 50.0 * n.unit(), 320.0 + 80.0 * n.unit()),
+        bend: 2.0,
+        ratio: 2.71,
+        index: (0.4, 2.0),
+        chaos_hz: 40.0,
+        chaos: 0.6,
+        noise: 0.1,
+        cutoff: (900.0, 2500.0),
+        attack: 0.004,
+        decay: 0.07,
+        release: 0.03,
+        ..Wet::default()
+    };
+    wet(n, &w).into_iter().map(|s| s * 0.5).collect()
 }
 
-/// Wub-wub-wub: a low tone rocking in pitch and loudness, with a little wet noise.
+/// Wub-wub-wub: a low, gloppy tone rocking in pitch and loudness, bubbling as it goes.
 fn wobble(n: &mut Noise) -> Vec<f32> {
-    let dur = 0.9;
-    let rate = 5.0 + n.unit();
-    let mut osc = Osc::default();
-    let mut svf = Svf::default();
-    (0..len(dur))
-        .map(|i| {
-            let t = time(i);
-            let w = (t * rate * std::f32::consts::TAU).sin();
-            let tone = osc.step(95.0 * (1.0 + 0.18 * w));
-            let (low, _, _) = svf.step(n.next(), 500.0 + 300.0 * w, 1.0);
-            let pulse = (0.5 - 0.5 * w).powf(1.5);
-            let env = (t / 0.05).min(1.0) * ((dur - t) / 0.2).clamp(0.0, 1.0);
-            (0.6 * tone + 0.5 * low) * pulse * env
-        })
-        .collect()
+    let w = Wet {
+        dur: 0.9,
+        pitch: (85.0, 80.0),
+        ratio: 2.71,
+        index: (0.5, 3.0),
+        chaos_hz: 18.0 + 8.0 * n.unit(),
+        chaos: 0.8,
+        noise: 0.2,
+        cutoff: (350.0, 1400.0),
+        attack: 0.05,
+        decay: 10.0,
+        release: 0.25,
+        rock: (5.0 + n.unit(), 0.2, 0.8),
+        ..Wet::default()
+    };
+    wet(n, &w).into_iter().map(|s| s * 0.55).collect()
 }
 
-/// A tiny pop: a click and a short chirp up.
+/// A tiny wet pop.
 fn plip(n: &mut Noise, gain: f32) -> Vec<f32> {
-    let f0 = 900.0 + 900.0 * n.unit();
-    let mut osc = Osc::default();
-    (0..len(0.05))
-        .map(|i| {
-            let t = time(i);
-            let click = if t < 0.0015 { n.next() * 0.5 } else { 0.0 };
-            (osc.step(f0 * (1.0 + 2.5 * t / 0.05)) * (-t / 0.012).exp() + click) * gain
-        })
-        .collect()
+    let w = Wet {
+        dur: 0.045,
+        pitch: (450.0 + 300.0 * n.unit(), 1100.0 + 500.0 * n.unit()),
+        ratio: 2.71,
+        index: (0.3, 2.0),
+        chaos_hz: 300.0,
+        noise: 0.2,
+        cutoff: (2000.0, 5000.0),
+        attack: 0.001,
+        decay: 0.012,
+        release: 0.008,
+        hold: 1,
+        ..Wet::default()
+    };
+    wet(n, &w).into_iter().map(|s| s * gain).collect()
 }
 
-/// A springy boing: a squish, then a tone swooping up with a quiver; higher for `k`.
+/// A springy, gloopy boing: swooping up with a quiver, higher for `k`.
 fn boing(n: &mut Noise, k: f32) -> Vec<f32> {
-    let f0 = (130.0 + 170.0 * k) * (0.95 + 0.1 * n.unit());
-    let mut osc = Osc::default();
-    let mut out: Vec<f32> = (0..len(0.38))
-        .map(|i| {
-            let t = time(i);
-            let f = f0 * (1.0 + 0.9 * (1.0 - (-t / 0.06).exp())) * (1.0 + 0.04 * (t * 16.0 * std::f32::consts::TAU).sin());
-            osc.step(f) * (t / 0.004).min(1.0) * (-t / 0.13).exp() * 0.5
-        })
-        .collect();
+    let f0 = (110.0 + 140.0 * k) * (0.95 + 0.1 * n.unit());
+    let w = Wet {
+        dur: 0.36,
+        pitch: (f0, f0 * 2.0),
+        bend: 3.0,
+        ratio: 2.71,
+        index: (0.6, 2.5),
+        chaos_hz: 30.0,
+        chaos: 0.7,
+        noise: 0.12,
+        cutoff: (800.0, 2800.0),
+        attack: 0.003,
+        decay: 0.13,
+        release: 0.05,
+        rock: (16.0, 0.05, 0.0),
+        ..Wet::default()
+    };
+    let mut out: Vec<f32> = wet(n, &w).into_iter().map(|s| s * 0.5).collect();
     let squish = splat(n, 0.15);
-    mix_in(&mut out, &squish[..squish.len().min(len(0.05))], 0, 0.8);
+    mix_in(&mut out, &squish[..squish.len().min(len(0.06))], 0, 0.8);
     out
 }
 
@@ -464,23 +602,22 @@ fn thunk(n: &mut Noise) -> Vec<f32> {
     out
 }
 
-/// Goo slurping back together: bubbly noise sweeping up, fading in and out.
+/// Goo slurping back together: a long, gloppy squelch rising, bubbling slowly.
 fn slurp(n: &mut Noise) -> Vec<f32> {
-    let dur = 1.3;
-    let mut svf = Svf::default();
-    let mut wob = 0.5f32;
-    (0..len(dur))
-        .map(|i| {
-            let t = time(i);
-            let cut = 250.0 * (1500.0f32 / 250.0).powf(t / dur);
-            let (_, band, _) = svf.step(n.next(), cut, 5.0);
-            if i % 900 == 0 {
-                wob = 0.2 + 0.8 * n.unit();
-            }
-            let env = (t / 0.25).min(1.0) * ((dur - t) / 0.3).clamp(0.0, 1.0);
-            band * wob * env * 0.9
-        })
-        .collect()
+    let w = Wet {
+        dur: 1.3,
+        pitch: (55.0 + 10.0 * n.unit(), 130.0 + 30.0 * n.unit()),
+        ratio: 2.71,
+        index: (1.0, 5.0),
+        chaos_hz: 22.0 + 10.0 * n.unit(),
+        noise: 0.35,
+        cutoff: (300.0, 2200.0),
+        attack: 0.25,
+        decay: 10.0,
+        release: 0.35,
+        ..Wet::default()
+    };
+    wet(n, &w).into_iter().map(|s| s * 0.5).collect()
 }
 
 #[cfg(test)]
