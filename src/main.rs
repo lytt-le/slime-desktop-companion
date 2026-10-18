@@ -18,6 +18,7 @@ mod physics;
 mod settings;
 mod shot;
 mod sim;
+mod sound;
 mod ui;
 #[cfg(test)]
 mod tests;
@@ -45,7 +46,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use draw::{draw_body, draw_goo, EyeBlock, Look};
 use physics::{v2, Bounds, V2};
-use sim::{Antic, World, FRAME};
+use sim::{Antic, Noise, World, FRAME};
+use sound::Sfx;
 
 use brain::Provider;
 use settings::{Settings, MAX_SIZE, MIN_SIZE};
@@ -625,6 +627,10 @@ fn app(respawned: bool) {
         let mut glance = (0.0f32, 1.0f32);
         // Moods (cross, dizzy, asleep, smoking), and how long since anyone bothered him.
         let mut fx = fx::Fx::new(std::process::id() ^ 0x5bd1_e995);
+        // Sound effects, and how long bubbles popping can be heard for (only after a burst
+        // of them, not every one that rises while he sits there).
+        let mut sounds = sound::Sounds::new();
+        let mut pops_heard = 0.0f32;
         let mut fx_shown = false;
         let mut idle_for = 0.0f32;
         if respawned {
@@ -663,6 +669,7 @@ fn app(respawned: bool) {
                         fx.stub_out(&world);
                         idle_for = 0.0;
                         world.start_grab(p);
+                        sounds.play(Sfx::Squelch);
                         trail.clear();
                         trail.push_back((Instant::now(), p));
                         press = (Instant::now(), p);
@@ -672,6 +679,7 @@ fn app(respawned: bool) {
                     Event::Pin => {
                         if world.pin() {
                             world.poke(-2.0);
+                            sounds.play(Sfx::Thunk);
                         }
                     }
                     Event::GrabEnd => {
@@ -697,9 +705,13 @@ fn app(respawned: bool) {
                                 taps.0 = 0;
                                 fx.mushroom(&world);
                                 world.burst();
+                                sounds.play(Sfx::Boom);
+                                sounds.play_after(Sfx::Slurp, 1.6);
+                                pops_heard = 0.0;
                             } else if taps.0 >= CROSS_TAPS {
                                 fx.annoyed();
                                 world.poke(-3.0);
+                                sounds.play(Sfx::Blorp);
                             }
                         }
                     }
@@ -897,6 +909,13 @@ fn app(respawned: bool) {
                                 cfg.keepy = !cfg.keepy;
                                 cfg.save();
                             }
+                            Some(Hit::Sounds) => {
+                                cfg.sounds = !cfg.sounds;
+                                cfg.save();
+                                // A blorp to show they're on.
+                                sounds.on = cfg.sounds;
+                                sounds.play(Sfx::Blorp);
+                            }
                             Some(Hit::Web) => {
                                 cfg.web = !cfg.web;
                                 cfg.save();
@@ -1074,6 +1093,8 @@ fn app(respawned: bool) {
             // or is picked up.
             if cfg.keepy && world.keepy_up(mouse) {
                 keepy_run += 1;
+                // Higher and higher as the run goes on.
+                sounds.play(Sfx::Boing(0.35 + 0.65 * (keepy_run.min(20) as f32 / 20.0)));
                 if keepy_run > cfg.keepy_best {
                     cfg.keepy_best = keepy_run;
                     keepy_record = true;
@@ -1085,6 +1106,18 @@ fn app(respawned: bool) {
             while acc >= FRAME {
                 world.step(FRAME);
                 acc -= FRAME;
+            }
+            // Sound effects: quiet while he's hidden behind something fullscreen.
+            sounds.on = cfg.sounds && hidden_behind.is_none();
+            pops_heard = (pops_heard - dt).max(0.0);
+            for n in world.take_noises() {
+                match n {
+                    Noise::Land(k) | Noise::Wall(k) if k > 0.03 => sounds.play(Sfx::Splat(k)),
+                    Noise::Jump => sounds.play(Sfx::Boing(0.6)),
+                    Noise::Hop => sounds.play(Sfx::Boing(0.2)),
+                    Noise::Pop if pops_heard > 0.0 => sounds.play(Sfx::Plip),
+                    _ => {}
+                }
             }
             // Moods: cross after a hard knock into a wall, dizzy after a shaking (reeling
             // once he's put down), lying low while asleep, waking with a stretch.
@@ -1131,6 +1164,7 @@ fn app(respawned: bool) {
             if reforming && !world.reforming() {
                 speech.say(REFORMED[(rng.next() * REFORMED.len() as f32) as usize % REFORMED.len()]);
                 world.poke(3.0);
+                sounds.play(Sfx::Blorp);
             }
             reforming = world.reforming();
             // Safety net: if he's somehow off every screen, or mostly gone, bring him back.
@@ -1175,7 +1209,15 @@ fn app(respawned: bool) {
                     };
                     match antic {
                         Some(a) => {
-                            world.start_antic(a);
+                            if world.start_antic(a) {
+                                match a {
+                                    Antic::Wobble => sounds.play(Sfx::Wobble),
+                                    Antic::Flatten => sounds.play(Sfx::Splat(0.2)),
+                                    Antic::Stretch => sounds.play(Sfx::Blorp),
+                                    Antic::Bubbles => pops_heard = 3.0,
+                                    _ => {}
+                                }
+                            }
                         }
                         // A smoke break.
                         None if (0.86..0.94).contains(&pick) => fx.light_up(25.0 + rng.next() * 20.0, dir),
@@ -1239,6 +1281,7 @@ fn app(respawned: bool) {
                         fx.wake();
                         tell(&mut speech, &mut chat_log, &t);
                         world.poke(3.0);
+                        sounds.play(Sfx::Blorp);
                     }
                     brain::Reply::Searching(what) => {
                         speech.think_about(&what);
@@ -1325,6 +1368,7 @@ fn app(respawned: bool) {
                     web: cfg.web,
                     keepy: cfg.keepy,
                     keepy_best: cfg.keepy_best,
+                    sounds: cfg.sounds,
                     provider: cfg.provider.label(),
                     model: cfg.model().1,
                     key: &key_text,

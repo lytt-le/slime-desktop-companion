@@ -164,6 +164,7 @@ pub enum Hit {
     Facts,
     Idle,
     Keepy,
+    Sounds,
     Web,
     ProviderPrev,
     ProviderNext,
@@ -234,6 +235,7 @@ pub struct PanelView<'a> {
     /// Keepy uppies, and its high score.
     pub keepy: bool,
     pub keepy_best: u32,
+    pub sounds: bool,
     pub provider: &'a str,
     pub model: &'a str,
     pub key: &'a str,
@@ -345,6 +347,7 @@ fn rows(tab: usize, collapsed: &[bool; SECTION_N]) -> Vec<(Row, usize)> {
             Row::Check(Hit::Facts),
             Row::Check(Hit::Idle),
             Row::Check(Hit::Keepy),
+            Row::Check(Hit::Sounds),
             Row::Title(Section::Brain),
             Row::Provider,
             Row::Model,
@@ -667,6 +670,7 @@ fn draw_row(cv: &mut Canvas, v: &PanelView, row: Row, y: usize) {
                 Hit::Facts => ("Fun facts", v.facts),
                 Hit::Idle => ("Idle antics", v.idle),
                 Hit::Keepy => ("Keepy uppies", v.keepy),
+                Hit::Sounds => ("Sound effects", v.sounds),
                 _ => ("Search the web", v.web),
             };
             cv.checkbox(y, label, on, hover(h));

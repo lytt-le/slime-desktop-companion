@@ -220,6 +220,20 @@ pub enum Antic {
     Bubbles,
 }
 
+/// Something he just did that makes a noise: landings and wall hits (how hard, 0..1),
+/// taking off, and bubbles popping.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Noise {
+    Land(f32),
+    Wall(f32),
+    Jump,
+    Hop,
+    Pop,
+}
+
+/// An impact this hard (cells per substep beyond a gentle touch) is as loud as it gets.
+const LOUDEST_HIT: f32 = 8.0;
+
 /// A bubble that just popped (cell coords, seconds since).
 pub struct Pop {
     pub at: V2,
@@ -303,6 +317,8 @@ pub struct World {
     pub pinned: bool,
     /// Burst, and slowly growing back: seconds since, and the size of the seed left.
     reform: Option<(f32, usize)>,
+    /// Noises since they were last taken.
+    noises: Vec<Noise>,
 }
 
 /// Fractional window-ride offsets per platform id.
@@ -365,6 +381,7 @@ impl World {
             rest_bias: 0.0,
             pinned: false,
             reform: None,
+            noises: Vec::new(),
         }
     }
 
@@ -509,6 +526,11 @@ impl World {
         self.regrow = 0.0;
         self.shake = 0.0;
         self.squash_v += 6.0;
+    }
+
+    /// The noises he's made since last asked.
+    pub fn take_noises(&mut self) -> Vec<Noise> {
+        std::mem::take(&mut self.noises)
     }
 
     /// Burst and still growing back.
@@ -809,6 +831,7 @@ impl World {
         let vx = (vx.signum() * vx.abs().max(min_vx)).clamp(-max_vx, max_vx);
         self.vb = v2(vx, vy);
         self.launched = true;
+        self.noises.push(Noise::Jump);
         self.squash_v += JELLY_JUMP * self.tune.jelly_kick; // stretches on take-off
         for e in &mut self.ents {
             if e.kind != Kind::Goo {
@@ -965,6 +988,10 @@ impl World {
     }
 
     pub fn step(&mut self, dt: f32) {
+        // (Nobody listening: don't keep them.)
+        if self.noises.len() > 64 {
+            self.noises.clear();
+        }
         self.launch_grace = (self.launch_grace - dt).max(0.0);
         for p in &mut self.pops {
             p.age += dt;
@@ -1083,6 +1110,12 @@ impl World {
         let hard = |v: f32| v.signum() * (v.abs() - IMPACT_MIN).max(0.0);
         if impact.y > 0.0 {
             self.squash_v -= JELLY_LAND * self.tune.jelly_kick * hard(impact.y); // landing: splat
+        }
+        if hard(impact.y.abs()) > 0.0 {
+            self.noises.push(Noise::Land((hard(impact.y.abs()) / LOUDEST_HIT).min(1.0)));
+        }
+        if hard(impact.x.abs()) > 0.0 {
+            self.noises.push(Noise::Wall((hard(impact.x.abs()) / LOUDEST_HIT).min(1.0)));
         }
         // Hard impacts throw off splatter (in life_cycle).
         let hit = v2(hard(impact.x), hard(impact.y));
@@ -1564,6 +1597,7 @@ impl World {
                 self.launched = true;
                 self.launch_grace = 0.25;
                 self.hopping = true;
+                self.noises.push(Noise::Hop);
                 self.squash_v += JELLY_JUMP * 0.6 * self.tune.jelly_kick;
                 for e in &mut self.ents {
                     if e.kind != Kind::Goo {
@@ -1859,6 +1893,7 @@ impl World {
                 }
                 Kind::Bubble if e.age < 0.0 => {
                     self.pops.push(Pop { at: v2(e.x as f32 + 0.5, e.y as f32 + 0.5), age: 0.0 });
+                    self.noises.push(Noise::Pop);
                     self.remove(k);
                     continue;
                 }

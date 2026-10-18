@@ -1008,6 +1008,7 @@ fn settings_panel_renders_and_hits() {
             web: cfg.web,
             keepy: cfg.keepy,
             keepy_best: cfg.keepy_best,
+            sounds: cfg.sounds,
             provider: cfg.provider.label(),
             model: cfg.model().1,
             key: &key_text,
@@ -1089,17 +1090,18 @@ fn settings_panel_renders_and_hits() {
     assert_eq!(at(S, 30, 59), Some(Hit::Facts));
     assert_eq!(at(S, 30, 71), Some(Hit::Idle));
     assert_eq!(at(S, 30, 83), Some(Hit::Keepy));
-    assert_eq!(at(S, 100, 97), Some(Hit::Title(Section::Brain)));
-    assert_eq!(at(S, 62, 109), Some(Hit::ProviderPrev));
-    assert_eq!(at(S, 150, 109), Some(Hit::ProviderNext));
-    assert_eq!(at(S, 150, 122), Some(Hit::ModelNext));
-    assert_eq!(at(S, 30, 135), Some(Hit::Web));
-    assert_eq!(at(S, 140, 148), Some(Hit::PasteKey));
-    assert_eq!(at(S, 180, 148), Some(Hit::ClearKey));
-    assert_eq!(at(S, 100, 161), None); // status line
+    assert_eq!(at(S, 30, 95), Some(Hit::Sounds));
+    assert_eq!(at(S, 100, 109), Some(Hit::Title(Section::Brain)));
+    assert_eq!(at(S, 62, 121), Some(Hit::ProviderPrev));
+    assert_eq!(at(S, 150, 121), Some(Hit::ProviderNext));
+    assert_eq!(at(S, 150, 134), Some(Hit::ModelNext));
+    assert_eq!(at(S, 30, 147), Some(Hit::Web));
+    assert_eq!(at(S, 140, 160), Some(Hit::PasteKey));
+    assert_eq!(at(S, 180, 160), Some(Hit::ClearKey));
+    assert_eq!(at(S, 100, 173), None); // status line
     assert_eq!(at(S, 20, 216), Some(Hit::Reset));
     assert_eq!(at(S, 190, 216), Some(Hit::Quit));
-    assert_eq!(panel_hit(140 * 2, 148 * 2, S, false, false, &open, p), None); // no key buttons for the Claude plan
+    assert_eq!(panel_hit(140 * 2, 160 * 2, S, false, false, &open, p), None); // no key buttons for the Claude plan
     // A closed section shows only its title, and the rest moves up.
     let shut = [true, false, true, false];
     assert_eq!(at_c(S, &shut, 30, 47), Some(Hit::Title(Section::Brain)));
@@ -1657,6 +1659,7 @@ fn claude_code_reads_an_image() {
         web: true,
         keepy: false,
         keepy_best: 0,
+        sounds: true,
         provider: "",
         model: "",
         key: "",
@@ -1769,4 +1772,55 @@ fn pinned_holds_still() {
     }
     eprintln!("PX pinned: centroid travelled {path:.1}px in 10s, {hops} hops");
     assert!(hops <= 3 && path < 40.0, "shaking on the pin: {path:.1}px, {hops} hops");
+}
+
+/// Every sound effect renders to something audible, of a sensible length, without
+/// blowing up (and they're saved as .wav files beside the snapshots, to listen to).
+#[test]
+fn sound_effects() {
+    use crate::sound::{render, Sfx, RATE};
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/snapshots/sounds");
+    std::fs::create_dir_all(&dir).unwrap();
+    let all = [
+        ("splat_soft", Sfx::Splat(0.1)),
+        ("splat_hard", Sfx::Splat(1.0)),
+        ("squelch", Sfx::Squelch),
+        ("blorp", Sfx::Blorp),
+        ("wobble", Sfx::Wobble),
+        ("plip", Sfx::Plip),
+        ("boing_low", Sfx::Boing(0.2)),
+        ("boing_high", Sfx::Boing(1.0)),
+        ("boom", Sfx::Boom),
+        ("thunk", Sfx::Thunk),
+        ("slurp", Sfx::Slurp),
+    ];
+    for (name, s) in all {
+        let a = render(s, 1234);
+        let b = render(s, 999);
+        let secs = a.len() as f32 / RATE as f32;
+        let peak = a.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let rms = (a.iter().map(|x| x * x).sum::<f32>() / a.len() as f32).sqrt();
+        eprintln!("SFX {name}: {secs:.2}s, peak {peak:.2}, rms {rms:.3}");
+        assert!(a.iter().all(|x| x.is_finite()), "{name}: not finite");
+        assert!(secs > 0.03 && secs < 3.0, "{name}: {secs}s");
+        assert!(peak > 0.05 && peak < 4.0, "{name}: peak {peak}");
+        assert!(a != b, "{name}: the same every time");
+        // As 16-bit mono .wav, through the same soft clip as the mixer.
+        let pcm: Vec<u8> = a.iter().flat_map(|x| (((x * 0.55).tanh() * 32000.0) as i16).to_le_bytes()).collect();
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF");
+        wav.extend((36 + pcm.len() as u32).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(RATE.to_le_bytes());
+        wav.extend((RATE * 2).to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend((pcm.len() as u32).to_le_bytes());
+        wav.extend(pcm);
+        std::fs::write(dir.join(format!("{name}.wav")), wav).unwrap();
+    }
 }
