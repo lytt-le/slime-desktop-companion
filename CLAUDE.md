@@ -17,6 +17,7 @@ cargo build --release
 ```
 
 - That updates `G:\Claude Projects\companion\target\release\slime.exe`, the one the user runs.
-- If the build can't overwrite `slime.exe`, it's running. Say so; don't kill it.
+- If the build can't overwrite `slime.exe`, it's running: close it (`Stop-Process -Name slime`;
+  the second process is his guardian), rebuild, then start it again.
 - The GitHub release download (tag `V1`) is only updated when asked:
   `gh release upload V1 target\release\slime.exe --clobber -R lytt-le/slime-desktop-companion`.
