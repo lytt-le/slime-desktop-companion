@@ -695,6 +695,7 @@ fn app(respawned: bool) {
                             taps = (if quick { taps.0 + 1 } else { 1 }, now);
                             if taps.0 >= BURST_TAPS {
                                 taps.0 = 0;
+                                fx.mushroom(&world);
                                 world.burst();
                             } else if taps.0 >= CROSS_TAPS {
                                 fx.annoyed();

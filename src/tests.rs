@@ -755,21 +755,31 @@ fn notices_wall_hits_and_shaking() {
     }
 }
 
-/// A frame of the body with its effects layer (Z's, smoke, the pin) on top.
+/// A frame of the goo and body with its effects layer (Z's, smoke, the pin) on top.
 fn capture_with_fx(w: &World, fx: &crate::fx::Fx, sheet: &mut Sheet) {
+    const L: usize = 1200;
     let mut frame = vec![0u32; W * H];
     let full = (0, 0, w.w - 1, w.h - 1);
     let mut eyes = Eyes::new(w);
     eyes.update(w, V2::ZERO, FRAME, 0.5);
     let mut face = eyes.blocks(w);
     fx.style_eyes(&mut face);
-    draw_body(&mut frame, W, w, full, &face);
-    let mut layer = vec![0u32; 600 * 600];
-    if let Some((x, y, lw, lh)) = fx.draw(&mut layer, 600, 600, w) {
+    draw_goo(&mut frame, W, w, full);
+    let mut body = vec![0u32; W * H];
+    draw_body(&mut body, W, w, full, &face);
+    for (d, &s) in frame.iter_mut().zip(&body) {
+        let a = s >> 24;
+        if a > 0 {
+            let mix = |sc: u32, dc: u32| (sc + dc * (255 - a) / 255).min(255);
+            *d = (mix(a, *d >> 24) << 24) | (mix(s >> 16 & 255, *d >> 16 & 255) << 16) | (mix(s >> 8 & 255, *d >> 8 & 255) << 8) | mix(s & 255, *d & 255);
+        }
+    }
+    let mut layer = vec![0u32; L * L];
+    if let Some((x, y, lw, lh)) = fx.draw(&mut layer, L, L, w) {
         for yy in 0..lh {
             for xx in 0..lw {
                 let (fx_, fy) = (x + xx as i32, y + yy as i32);
-                let s = layer[yy * 600 + xx];
+                let s = layer[yy * L + xx];
                 let a = s >> 24;
                 if a > 0 && fx_ >= 0 && fy >= 0 && (fx_ as usize) < W && (fy as usize) < H {
                     let d = &mut frame[fy as usize * W + fx_ as usize];
@@ -1680,17 +1690,22 @@ fn claude_code_reads_an_image() {
     assert!(answer.unwrap().to_uppercase().contains("SLIME"));
 }
 
-/// Clicked too many times, he bursts: goo sprays all round, leaving a little seed that
-/// slowly grows back (taking seconds, not a frame), soaking up goo near him, until he's
-/// whole again about where he was.
+/// Clicked too many times, he bursts: a mushroom cloud goes up and goo sprays all round,
+/// leaving a little seed that slowly grows back (taking seconds, not a frame), soaking up
+/// goo near him, until he's whole again about where he was.
 #[test]
 fn bursts_and_reforms() {
+    use crate::fx::Fx;
     let mut w = world_at(v2(320.0, 330.0));
     let mut sheet = Sheet::new();
     run(&mut w, 120, &mut sheet, 0);
     let (start, at) = (w.slime_count(), w.centroid());
     sheet.capture(&w);
+    let mut fx = Fx::new(7);
+    fx.mushroom(&w);
     w.burst();
+    let mut layer = vec![0u32; 1200 * 1200];
+    let mut cloud_top = f32::MAX;
     assert!(w.reforming());
     let seed = w.slime_count();
     let (x0, _, x1, _) = w.goo_bounds().unwrap();
@@ -1700,11 +1715,15 @@ fn bursts_and_reforms() {
     let mut whole_at = None;
     for f in 0..900 {
         w.step(FRAME);
+        fx.update(FRAME, &w);
         if let Some((x0, _, x1, _)) = w.goo_bounds() {
             spread = spread.max(x1 - x0);
         }
-        if [2, 8, 20, 60, 120, 180, 240, 300, 420].contains(&f) {
-            sheet.capture(&w);
+        if let Some((_, y, _, _)) = fx.draw(&mut layer, 1200, 1200, &w) {
+            cloud_top = cloud_top.min(y as f32);
+        }
+        if [1, 6, 15, 30, 50, 80, 120, 180, 240, 300, 420].contains(&f) {
+            capture_with_fx(&w, &fx, &mut sheet);
         }
         if whole_at.is_none() && !w.reforming() {
             whole_at = Some(f as f32 * FRAME);
@@ -1713,7 +1732,10 @@ fn bursts_and_reforms() {
     sheet.save("burst");
     let whole_at = whole_at.expect("never grew back");
     let c = w.centroid();
-    eprintln!("PX burst: goo spread {spread} cells; whole again after {whole_at:.1}s at {c:?} ({} cells)", w.slime_count());
+    let ground = at.y + R0 * 0.5;
+    eprintln!("PX burst: goo spread {spread} cells; cloud up to {:.0}px above him; whole again after {whole_at:.1}s at {c:?} ({} cells)", ground - cloud_top, w.slime_count());
+    assert!(ground - cloud_top > R0 * 4.0, "no mushroom cloud: up to {cloud_top}");
+    assert!(!fx.visible(), "the cloud never cleared");
     assert!(spread as f32 * CELL > R0 * 4.0, "the goo hardly flew: {spread} cells");
     assert!(whole_at > 3.0 && whole_at < 9.0, "grew back in {whole_at:.1}s");
     assert!(w.intact() > 0.9);

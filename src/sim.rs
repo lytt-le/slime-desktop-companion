@@ -85,9 +85,9 @@ const KEEPY_SIDE: f32 = 0.6;
 /// Bursting (clicked too many times): the share of the body left as a seed in the middle,
 /// how fast the rest flies off (cells per substep at the rim) and up, and how long he
 /// takes to grow back from the seed (s).
-const BURST_SEED: f32 = 0.08;
-const BURST_SPEED: f32 = 2.5;
-const BURST_LIFT: f32 = 1.5;
+const BURST_SEED: f32 = 0.06;
+const BURST_SPEED: f32 = 4.5;
+const BURST_LIFT: f32 = 3.0;
 const REFORM_SECS: f32 = 6.0;
 /// While he grows back, goo on the floor near him creeps home to be soaked up: chance
 /// per frame of a step, and how far off it notices (radii).
@@ -481,12 +481,12 @@ impl World {
         let dist = |e: &Ent| (v2(e.x as f32 + 0.5, e.y as f32 + 0.5) - c).len2();
         body.sort_by(|&a, &b| dist(&self.ents[a]).total_cmp(&dist(&self.ents[b])));
         let keep = ((body.len() as f32 * BURST_SEED) as usize).max(1).min(body.len());
-        // Outermost first, each moved out to about twice its distance from the middle, so
-        // the droplets start apart and don't block each other (not through a window edge).
+        // Outermost first, each moved out to well over twice its distance from the middle,
+        // so the droplets start apart and don't block each other (not through a window edge).
         for &k in body[keep..].iter().rev() {
             let e = self.ents[k];
             let d = v2(e.x as f32 + 0.5, e.y as f32 + 0.5) - c;
-            let to = c + d * 2.0 + v2(self.rand() - 0.5, self.rand() - 0.5);
+            let to = c + d * 2.5 + v2(self.rand() - 0.5, self.rand() - 0.5);
             let (tx, ty) = (to.x.floor() as i32, to.y.floor() as i32);
             let through = (e.y.min(ty) + 1..=e.y.max(ty)).any(|y| self.idx(tx, y).is_some_and(|i| self.plat[i] != 0));
             if let Some(i) = self.idx(tx, ty).filter(|&i| !self.void[i] && self.occ[i] == 0 && !through) {

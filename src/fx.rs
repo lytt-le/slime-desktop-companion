@@ -55,6 +55,147 @@ struct LoosePin {
 }
 
 const PIN_FALL_FOR: f32 = 1.4;
+
+/// The mushroom cloud when he bursts (seconds; sizes in body radii): a flash and shock
+/// ring, then a fireball that climbs on a stem to `CLOUD_HEIGHT` over `CLOUD_RISE`,
+/// rolling into a cap and cooling to smoke, gone by `CLOUD_LIFE`.
+const FLASH_FOR: f32 = 0.3;
+const SHOCK_FOR: f32 = 0.45;
+const CLOUD_RISE: f32 = 1.4;
+const CLOUD_HEIGHT: f32 = 4.5;
+const CLOUD_LIFE: f32 = 5.0;
+const CLOUD_FADE: f32 = 3.0;
+/// Puffs in the cap's rolling ring, its domed top, the stem and the dust skirt.
+const CAP_PUFFS: usize = 44;
+const DOME_PUFFS: usize = 10;
+const STEM_PUFFS: usize = 26;
+const SKIRT_PUFFS: usize = 18;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Cap,
+    Dome,
+    Stem,
+    Skirt,
+}
+
+/// One puff of the cloud: where it sits in its part (0..1 along the ring, stem or
+/// skirt, and a second coordinate), how big, and a little heat of its own.
+struct Billow {
+    part: Part,
+    u: f32,
+    w: f32,
+    size: f32,
+    heat: f32,
+}
+
+struct Cloud {
+    /// Ground zero (screen px), body radius then (px), seconds since.
+    at: V2,
+    r: f32,
+    age: f32,
+    billows: Vec<Billow>,
+}
+
+/// Fire cooling to smoke: white hot (1) through yellow, orange and red to sooty brown (0).
+fn heat_colour(h: f32) -> [f32; 3] {
+    const STOPS: [(f32, [f32; 3]); 6] = [
+        (0.0, [78.0, 66.0, 62.0]),
+        (0.2, [120.0, 72.0, 52.0]),
+        (0.4, [206.0, 64.0, 26.0]),
+        (0.6, [250.0, 136.0, 32.0]),
+        (0.8, [255.0, 222.0, 110.0]),
+        (1.0, [255.0, 252.0, 236.0]),
+    ];
+    let h = h.clamp(0.0, 1.0);
+    for k in 1..STOPS.len() {
+        let (h1, c1) = STOPS[k];
+        if h <= h1 {
+            let (h0, c0) = STOPS[k - 1];
+            let t = (h - h0) / (h1 - h0);
+            return [0, 1, 2].map(|i| c0[i] + (c1[i] - c0[i]) * t);
+        }
+    }
+    STOPS[STOPS.len() - 1].1
+}
+
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl Cloud {
+    /// Its puffs as soft blobs (screen px centre, radius px, colour, alpha), back to front.
+    fn blobs(&self) -> Vec<(V2, f32, [f32; 3], f32)> {
+        use std::f32::consts::TAU;
+        let (t, r) = (self.age, self.r);
+        let late = (t - CLOUD_RISE).max(0.0);
+        // Climbs fast then eases off, and keeps drifting up and spreading after.
+        let rise = 1.0 - (1.0 - (t / CLOUD_RISE).min(1.0)).powi(3);
+        let height = r * (CLOUD_HEIGHT * rise + 0.25 * late);
+        let cap_r = r * (0.45 + 1.25 * rise + 0.12 * late);
+        let tube = cap_r * 0.42;
+        let top = self.at - v2(0.0, height);
+        let fade = 1.0 - smoothstep(CLOUD_FADE, CLOUD_LIFE, t);
+        let mut out: Vec<(f32, V2, f32, [f32; 3], f32)> = Vec::with_capacity(self.billows.len());
+        for b in &self.billows {
+            // Position, size, depth (toward the viewer), heat and light.
+            let (p, size, depth, heat, light) = match b.part {
+                Part::Cap => {
+                    // A ring of puffs rolling over itself: up the middle, out over the top
+                    // and down round the rim.
+                    let theta = b.u * TAU + t * 0.25;
+                    let phi = b.w * TAU - t * 2.4;
+                    let ring = cap_r + tube * phi.cos();
+                    let (x, y, z) = (ring * theta.cos(), -tube * phi.sin(), ring * theta.sin());
+                    let h = 1.1 - t / 2.0 + b.heat + 0.15 * y / tube;
+                    (top + v2(x, y + z * 0.22), tube * 0.95 * b.size, z, h, 1.0 - 0.38 * y / tube + 0.1 * z / cap_r)
+                }
+                Part::Dome => {
+                    let s = (b.u - 0.5) * 2.0;
+                    let p = top + v2(s * cap_r * 0.75, -tube * (0.7 + 0.6 * (1.0 - s * s)) + b.w * tube * 0.3);
+                    (p, tube * 1.05 * b.size, -cap_r * 0.3, 1.05 - t / 1.8 + b.heat, 1.15)
+                }
+                Part::Stem => {
+                    // Thin in the middle, flaring at the ground and into the cap.
+                    let s = b.u;
+                    let width = r * (0.26 + 0.45 * (1.0 - s).powi(3) + 0.3 * s.powi(4)) * (0.5 + 0.5 * rise);
+                    let x = (b.w - 0.5) * width * 0.8 + (s * 9.0 + t * 3.0).sin() * r * 0.07;
+                    let p = self.at + v2(x, -(height - tube * 0.4).max(0.0) * s - width * 0.5);
+                    (p, width * b.size, (b.w - 0.5) * width - cap_r * 0.5, 1.0 - t / 1.4 + b.heat + 0.2 * s, 0.9 + 0.2 * b.w)
+                }
+                Part::Skirt => {
+                    // Dust rolling out along the ground either side.
+                    let side = if b.w < 0.5 { -1.0 } else { 1.0 };
+                    let out_t = 1.0 - (1.0 - (t / 1.2).min(1.0)).powi(2);
+                    let spread = r * (0.4 + 2.8 * out_t + 0.2 * late) * (0.3 + 0.7 * b.u);
+                    let size = r * (0.22 + 0.3 * b.u + 0.12 * t.min(2.0)) * b.size;
+                    let p = self.at + v2(side * spread, -size * 0.6 - r * 0.1 * t.min(2.0));
+                    (p, size, -r * 3.0 + b.u, 0.55 - t / 1.0 + b.heat, 0.85 + 0.2 * b.u)
+                }
+            };
+            let col = heat_colour(heat).map(|c| (c * light).min(255.0));
+            out.push((depth, p, size.max(1.0), col, fade));
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.into_iter().map(|(_, p, s, c, a)| (p, s, c, a)).collect()
+    }
+
+    /// The shock ring along the ground (centre, radii px, alpha), while it lasts.
+    fn shock(&self) -> Option<(V2, V2, f32)> {
+        let k = self.age / SHOCK_FOR;
+        (k < 1.0).then(|| {
+            let rad = self.r * (1.0 + 7.0 * (1.0 - (1.0 - k).powi(2)));
+            (self.at, v2(rad, rad * 0.4), 0.8 * (1.0 - k))
+        })
+    }
+
+    /// The flash (centre, radius px, alpha), while it lasts.
+    fn flash(&self) -> Option<(V2, f32, f32)> {
+        let k = self.age / FLASH_FOR;
+        (k < 1.0).then(|| (self.at - v2(0.0, self.r * 0.6), self.r * (1.2 + 3.0 * k), 1.0 - k * k))
+    }
+}
 /// Keepy uppies count: cells per font pixel.
 const KEEPY_K: i32 = 2;
 
@@ -135,6 +276,7 @@ pub struct Fx {
     /// Keepy uppies: bounces in a row to show beside him, how solid (0..1), and whether
     /// it's a new best.
     pub keepy: Option<(u32, f32, bool)>,
+    cloud: Option<Cloud>,
 }
 
 /// The cigarette's cells (cell coords, colour) and where its glowing tip is, for a
@@ -147,7 +289,27 @@ struct CigCells {
 
 impl Fx {
     pub fn new(seed: u32) -> Fx {
-        Fx { angry: 0.0, dizzy: 0.0, asleep: None, cig: None, zs: Vec::new(), smoke: Vec::new(), z_in: 0.5, clock: 0.0, rng: seed | 1, pin: None, loose: Vec::new(), keepy: None }
+        Fx { angry: 0.0, dizzy: 0.0, asleep: None, cig: None, zs: Vec::new(), smoke: Vec::new(), z_in: 0.5, clock: 0.0, rng: seed | 1, pin: None, loose: Vec::new(), keepy: None, cloud: None }
+    }
+
+    /// He's bursting: a mushroom cloud goes up from where he sits in `world` (call it
+    /// before the burst, while he's whole).
+    pub fn mushroom(&mut self, world: &World) {
+        let Some((_, _, _, y1)) = world.body_bounds() else { return };
+        let c = world.centroid();
+        let at = v2(c.x, world.to_screen(v2(0.0, y1 as f32 + 1.0)).y);
+        let r = world.radius() * world.cell;
+        let mut billows = Vec::new();
+        for (part, n) in [(Part::Skirt, SKIRT_PUFFS), (Part::Stem, STEM_PUFFS), (Part::Cap, CAP_PUFFS), (Part::Dome, DOME_PUFFS)] {
+            for i in 0..n {
+                let u = (i as f32 + self.rand() * 0.8) / n as f32;
+                let (w, size, heat) = (self.rand(), 0.8 + self.rand() * 0.45, self.rand() * 0.25);
+                billows.push(Billow { part, u, w, size, heat });
+            }
+        }
+        self.cloud = Some(Cloud { at, r, age: 0.0, billows });
+        self.stub_out(world);
+        self.wake();
     }
 
     fn rand(&mut self) -> f32 {
@@ -364,11 +526,17 @@ impl Fx {
             l.angle += l.spin * dt;
         }
         self.loose.retain(|l| l.age < PIN_FALL_FOR);
+        if let Some(c) = &mut self.cloud {
+            c.age += dt;
+            if c.age >= CLOUD_LIFE {
+                self.cloud = None;
+            }
+        }
     }
 
     /// Anything moving (a pin just sitting there isn't).
     pub fn animating(&self) -> bool {
-        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || !self.loose.is_empty() || self.keepy.is_some()
+        self.cig.is_some() || !self.zs.is_empty() || !self.smoke.is_empty() || !self.loose.is_empty() || self.keepy.is_some() || self.cloud.is_some()
     }
 
     /// Anything to draw in the effects window.
@@ -379,6 +547,7 @@ impl Fx {
             || self.pin.is_some()
             || !self.loose.is_empty()
             || self.keepy.is_some()
+            || self.cloud.is_some()
     }
 
     /// Draws Z's, the cigarette and smoke into `buf` (`stride` px wide, `rows` tall).
@@ -441,6 +610,19 @@ impl Fx {
             }
             Some((cells, a, best))
         });
+        // The mushroom cloud, its flash and the shock ring.
+        let cloud = self.cloud.as_ref().map(|c| (c.blobs(), c.flash(), c.shock()));
+        if let Some((blobs, flash, shock)) = &cloud {
+            for &(p, s, _, _) in blobs {
+                grow(world.to_cell(p), s / cell + 1.0);
+            }
+            if let Some((p, s, _)) = flash {
+                grow(world.to_cell(*p), s / cell + 1.0);
+            }
+            if let Some((p, rr, _)) = shock {
+                grow(world.to_cell(*p), rr.x / cell + 2.0);
+            }
+        }
         if lo.x > hi.x {
             return None;
         }
@@ -466,6 +648,46 @@ impl Fx {
                 }
             }
         };
+
+        // The mushroom cloud: billows of fire cooling to smoke (with a little grain), the
+        // shock ring racing out along the ground, and the flash over it all.
+        if let Some((blobs, flash, shock)) = &cloud {
+            let disc = |put: &mut dyn FnMut(i32, i32, [f32; 4]), p: V2, rad: f32, col: [f32; 3], a: f32, grain: bool| {
+                let c = world.to_cell(p);
+                let r = rad / cell;
+                for y in (c.y - r).floor() as i32..=(c.y + r).floor() as i32 {
+                    for x in (c.x - r).floor() as i32..=(c.x + r).floor() as i32 {
+                        let off = v2(x as f32 + 0.5 - c.x, y as f32 + 0.5 - c.y) * (1.0 / r);
+                        let d = off.len();
+                        if d <= 1.0 {
+                            // Billows: grainy, and lit from the upper left like lumps.
+                            let n = if grain { (0.92 + 0.16 * hash01(x, y)) * (1.0 - 0.28 * off.y - 0.12 * off.x) } else { 1.0 };
+                            let col = [col[0] * n, col[1] * n, col[2] * n].map(|v| v.min(255.0));
+                            put(x, y, [col[0], col[1], col[2], a * (1.0 - smoothstep(0.85, 1.0, d))]);
+                        }
+                    }
+                }
+            };
+            for &(p, s, col, a) in blobs {
+                disc(&mut put, p, s, col, a, true);
+            }
+            if let Some((p, rr, a)) = shock {
+                let c = world.to_cell(*p);
+                let (rx, ry) = (rr.x / cell, rr.y / cell);
+                for y in (c.y - ry - 2.0) as i32..=(c.y + ry + 2.0) as i32 {
+                    for x in (c.x - rx - 2.0) as i32..=(c.x + rx + 2.0) as i32 {
+                        let (dx, dy) = ((x as f32 + 0.5 - c.x) / rx, (y as f32 + 0.5 - c.y) / ry);
+                        let e = ((dx * dx + dy * dy).sqrt() - 1.0).abs() * rx;
+                        if e < 1.5 {
+                            put(x, y, [255.0, 240.0, 210.0, a * (1.0 - e / 1.5)]);
+                        }
+                    }
+                }
+            }
+            if let Some((p, s, a)) = flash {
+                disc(&mut put, *p, *s, [255.0, 255.0, 240.0], *a, false);
+            }
+        }
 
         // Smoke: soft grey blobs, growing and thinning as they rise.
         for s in &self.smoke {
@@ -586,6 +808,15 @@ impl Fx {
         let o = world.to_screen(v2(x0 as f32, y0 as f32));
         Some((o.x as i32, o.y as i32, w, h))
     }
+}
+
+/// A steady pseudo-random 0..1 per cell (grain in the smoke).
+fn hash01(x: i32, y: i32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x8da6_b343) ^ (y as u32).wrapping_mul(0xd816_3841);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x5bd1_e995);
+    h ^= h >> 15;
+    (h & 0xffff) as f32 / 65535.0
 }
 
 /// Premultiplied "over": colour `c` (0-255 rgb) at alpha `a` onto `dst`.
