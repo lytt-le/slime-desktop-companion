@@ -71,6 +71,9 @@ const HOLE_DEPTH_PULL: f32 = 40.0;
 const BUBBLE_RISE: f32 = 0.1;
 /// While carried: how much the goo sags (fraction of gravity) and lags behind the hand.
 const CARRY_SAG: f32 = 0.25;
+/// Pinned, the body only steps back toward the pin once it's drifted this many cells off
+/// (chasing a sub-cell error a whole cell at a time just makes him shake).
+const PIN_SLACK: f32 = 1.5;
 /// Sliding friction for cells resting on something.
 const FRICTION: f32 = 0.25;
 /// Most cells a particle may cross per substep.
@@ -907,8 +910,14 @@ impl World {
         let vb0 = self.vb;
         let launched = std::mem::take(&mut self.launched);
         if let (Some(t), Some(gr)) = (grab_target, &self.grab) {
-            let want = (t + gr.com_offset - c) * 0.25;
-            self.vb = self.vb + (want - self.vb) * 0.5;
+            let off = t + gr.com_offset - c;
+            if self.pinned && off.len() < PIN_SLACK {
+                self.vb = V2::ZERO;
+                self.fb = V2::ZERO;
+            } else {
+                let want = off * 0.25;
+                self.vb = self.vb + (want - self.vb) * 0.5;
+            }
         } else {
             self.vb.y += g;
         }
