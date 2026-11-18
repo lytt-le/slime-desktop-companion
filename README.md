@@ -1,6 +1,50 @@
+<div align="center">
+
 # Slime Desktop Companion
 
-A gooey pixel-art slime that lives on your desktop (Windows, or Linux with KDE Plasma 6 on Wayland). He sits on your windows and taskbar, gets thrown around, chats with you through Claude or DeepSeek, and gets up to mischief when left alone. Written in Rust on raw Win32 or Wayland (no engine), simulated Noita-style: the desktop is a grid of cells (3 screen pixels each), and the slime is ~900 individual cells that each move and collide on their own. Goo drips and bubbles are cells too.
+**A gooey pixel-art slime that lives on your desktop.**<br>
+He sits on your windows, gets thrown around, chats with you, and gets up to mischief when left alone.
+
+[![Windows](https://img.shields.io/badge/Windows-download-2ea043?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/lytt-le/slime-desktop-companion/releases/download/V1/slime.exe)
+[![Linux](https://img.shields.io/badge/Linux_(KDE_Plasma)-download-2ea043?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/lytt-le/slime-desktop-companion/releases/download/V1-linux/slime-linux-x86_64.tar.gz)
+
+[![Release](https://img.shields.io/github/v/release/lytt-le/slime-desktop-companion?style=flat-square&color=3fb950&label=release)](https://github.com/lytt-le/slime-desktop-companion/releases)
+![Rust](https://img.shields.io/badge/made_with-Rust-b7410e?style=flat-square&logo=rust)
+![No engine](https://img.shields.io/badge/engine-none-555?style=flat-square)
+
+<img src="assets/readme/hero.png" alt="The slime sitting on a window's title bar, saying hi in a speech bubble" width="720">
+
+</div>
+
+<table>
+<tr>
+<td align="center" width="50%"><img src="assets/readme/landing.gif" alt="The slime falling, splatting on landing and wobbling back into shape"><br><sub><b>Squish.</b> Every landing splats, wobbles and drips goo.</sub></td>
+<td align="center" width="50%"><img src="assets/readme/burst.gif" alt="The slime bursting into a mushroom cloud and slowly reforming"><br><sub><b>Don't spam-click him.</b> He bursts, then slowly pulls himself back together.</sub></td>
+</tr>
+</table>
+
+<p align="center">
+<img src="assets/readme/moods.png" alt="Five moods: content, cross, dizzy, asleep, and on a smoke break" width="860"><br>
+<sub>Content &nbsp;·&nbsp; cross after a hard knock &nbsp;·&nbsp; dizzy from a shaking &nbsp;·&nbsp; napping &nbsp;·&nbsp; on a smoke break</sub>
+</p>
+
+<p align="center">
+<img src="assets/readme/panel.png" alt="The settings panel's three tabs: chat, settings and customisation" width="860"><br>
+<sub>Right-click him to chat (Claude or DeepSeek), change his settings, or recolour and re-goo him.</sub>
+</p>
+
+## Download
+
+| | Get it | Needs |
+|---|---|---|
+| 🪟 **Windows** | [`slime.exe`](https://github.com/lytt-le/slime-desktop-companion/releases/download/V1/slime.exe) ([release notes](https://github.com/lytt-le/slime-desktop-companion/releases/tag/V1)) | Windows 10 or 11. Nothing to install: just run it. |
+| 🐧 **Linux** | [`slime-linux-x86_64.tar.gz`](https://github.com/lytt-le/slime-desktop-companion/releases/download/V1-linux/slime-linux-x86_64.tar.gz) ([release notes](https://github.com/lytt-le/slime-desktop-companion/releases/tag/V1-linux)) | KDE Plasma 6 on Wayland. Unpack and run `./slime`; it adds itself to the app menu. See [Linux](#linux-kde-plasma-on-wayland) for what's different. |
+
+For chat, either sign in to [Claude Code](https://claude.com/claude-code) with a Claude Pro/Max plan, or paste an Anthropic or DeepSeek API key into the panel. Or [build it yourself](#build--run).
+
+## About
+
+He sits on your windows and taskbar, gets thrown around, chats with you through Claude or DeepSeek, and gets up to mischief when left alone. Written in Rust on raw Win32 or Wayland (no engine), simulated Noita-style: the desktop is a grid of cells (3 screen pixels each), and the slime is ~900 individual cells that each move and collide on their own. Goo drips and bubbles are cells too.
 
 ## Controls
 
