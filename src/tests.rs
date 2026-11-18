@@ -631,11 +631,10 @@ fn idle_antics() {
 /// as fullscreen: not a maximized one.
 #[test]
 fn spots_fullscreen_windows() {
-    use crate::desktop::fullscreen_on;
-    use windows_sys::Win32::Foundation::RECT;
-    let rect = |left, top, right, bottom| RECT { left, top, right, bottom };
+    use crate::desktop::{fullscreen_on, Rect};
+    let rect = |left, top, right, bottom| Rect { left, top, right, bottom };
     let mons = [rect(0, 0, 1920, 1080), rect(1920, -278, 3000, 1642)];
-    let fs = |r: RECT, outer: RECT, captioned| fullscreen_on(&r, &outer, &mons, captioned);
+    let fs = |r: Rect, outer: Rect, captioned| fullscreen_on(&r, &outer, &mons, captioned);
     // F11 on either monitor (as Firefox on the real desktop: frame and window exactly the screen).
     assert_eq!(fs(rect(0, 0, 1920, 1080), rect(0, 0, 1920, 1080), false), Some(0));
     assert_eq!(fs(rect(1920, -278, 3000, 1642), rect(1920, -278, 3000, 1642), false), Some(1));
@@ -684,10 +683,11 @@ fn leaps_between_monitors() {
 }
 
 /// Lists what the real desktop counts as fullscreen right now (nothing, normally).
+#[cfg(windows)]
 #[test]
 #[ignore]
 fn real_fullscreen_windows() {
-    let scan = crate::desktop::scan(std::ptr::null_mut());
+    let scan = unsafe { crate::host::scan(std::ptr::null_mut()) };
     for &(h, m) in &scan.fullscreen {
         let mut t = [0u16; 128];
         let n = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW(h as _, t.as_mut_ptr(), 128) }.max(0) as usize;
@@ -1524,13 +1524,14 @@ fn goo_scales_with_size_and_violence() {
 /// A real (but invisible) borderless window covering the main monitor counts as
 /// fullscreen, and the slime's windows tuck in behind it and come back on top.
 /// Run with `cargo test --release -- --ignored`.
+#[cfg(windows)]
 #[test]
 #[ignore]
 fn hides_behind_a_real_fullscreen_window() {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     unsafe {
-        let class = crate::wide("SlimeFullscreenTest");
+        let class = crate::host::wide("SlimeFullscreenTest");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(DefWindowProcW),
             hInstance: GetModuleHandleW(std::ptr::null()),
@@ -1538,7 +1539,7 @@ fn hides_behind_a_real_fullscreen_window() {
             ..std::mem::zeroed()
         };
         RegisterClassW(&wc);
-        let before = crate::desktop::scan(std::ptr::null_mut());
+        let before = crate::host::scan(std::ptr::null_mut());
         let m = before.monitors.iter().position(|m| m.left <= 0 && m.right > 0 && m.top <= 0 && m.bottom > 0).unwrap();
         let r = before.monitors[m];
         // Fully transparent, so nothing shows and clicks go through.
@@ -1565,11 +1566,11 @@ fn hides_behind_a_real_fullscreen_window() {
         let slime = make(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, (r.left + 10, r.top + 10, 50, 50));
         let topmost = |h| GetWindowLongW(h, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0;
 
-        let scan = crate::desktop::scan(std::ptr::null_mut());
+        let scan = crate::host::scan(std::ptr::null_mut());
         let found = scan.fullscreen.contains(&(fs as isize, m));
-        crate::tuck_behind(&[slime], Some(fs as isize));
+        crate::host::tuck_behind(&[slime], Some(fs as isize));
         let tucked = !topmost(slime) && GetWindow(fs, GW_HWNDNEXT) == slime;
-        crate::tuck_behind(&[slime], None);
+        crate::host::tuck_behind(&[slime], None);
         let back = topmost(slime);
         DestroyWindow(slime);
         DestroyWindow(fs);
@@ -1580,6 +1581,7 @@ fn hides_behind_a_real_fullscreen_window() {
 }
 
 /// Run with `cargo test --release -- --ignored`.
+#[cfg(windows)]
 #[test]
 #[ignore]
 fn screenshots_leave_out_our_windows() {
@@ -1588,7 +1590,7 @@ fn screenshots_leave_out_our_windows() {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     unsafe {
-        let class = crate::wide("SlimeShotTest");
+        let class = crate::host::wide("SlimeShotTest");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(DefWindowProcW),
             hInstance: GetModuleHandleW(std::ptr::null()),
@@ -1621,7 +1623,7 @@ fn screenshots_leave_out_our_windows() {
             }
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
-        let target = crate::shot::Target { rect, label: "test".into() };
+        let target = crate::shot::Target { rect: crate::host::rect(rect), label: "test".into(), window: None };
         let magenta = |s: &crate::shot::Shot| {
             let img = &s.thumb;
             img.iter().filter(|&&p| p & 0xFFFFFF == 0xFF00FF).count() as f32 / img.len() as f32

@@ -1,6 +1,6 @@
 # Slime Desktop Companion
 
-A gooey pixel-art slime that lives on your Windows desktop. He sits on your windows and taskbar, gets thrown around, chats with you through Claude or DeepSeek, and gets up to mischief when left alone. Written in Rust on raw Win32 (no engine), simulated Noita-style: the desktop is a grid of cells (3 screen pixels each), and the slime is ~900 individual cells that each move and collide on their own. Goo drips and bubbles are cells too.
+A gooey pixel-art slime that lives on your desktop (Windows, or Linux with KDE Plasma 6 on Wayland). He sits on your windows and taskbar, gets thrown around, chats with you through Claude or DeepSeek, and gets up to mischief when left alone. Written in Rust on raw Win32 or Wayland (no engine), simulated Noita-style: the desktop is a grid of cells (3 screen pixels each), and the slime is ~900 individual cells that each move and collide on their own. Goo drips and bubbles are cells too.
 
 ## Controls
 
@@ -73,7 +73,21 @@ Goo matches the slime and how rough things get: hard landings and wall hits thro
 cargo run --release
 ```
 
-The exe ends up at `target/release/slime.exe` (no runtime dependencies), with the slime icon (`assets/slime.ico`) embedded by `build.rs`. To redraw the icon from the current renderer: `cargo test --release write_exe_icon -- --ignored`, then rebuild.
+On Windows the exe ends up at `target/release/slime.exe` (no runtime dependencies), with the slime icon (`assets/slime.ico`) embedded by `build.rs`. To redraw the icon from the current renderer: `cargo test --release write_exe_icon -- --ignored`, then rebuild.
+
+### Linux (KDE Plasma on Wayland)
+
+Needs KDE Plasma 6 on Wayland, Rust (e.g. `pacman -S rustup && rustup default stable`), and the ALSA library (`alsa-lib`, there already wherever PipeWire or PulseAudio is). Then `cargo build --release` and run `target/release/slime`. The first run adds **Slime** to the app menu (`~/.local/share/applications/slime-companion.desktop`), which is also what lets KWin hand him screenshots. Settings, keys and the crash log live in `~/.config/SlimeCompanion`.
+
+Wayland keeps apps from seeing each other, so on Linux:
+
+- A small **KWin script** runs while he does (loaded over D-Bus, gone when he quits) and tells him where the windows, the work areas and the mouse are. That's how he stands on title bars, rides along with windows and hides from fullscreen ones.
+- He draws on transparent **layer-shell** overlays, one per monitor; only his own pixels catch the mouse.
+- The **tray icon**: click it for the panel; its menu has Reset and Quit.
+- **The panel takes the keyboard** while it's open: type to chat, Esc or a click anywhere else closes it.
+- **Ask about this page** uses KWin's screenshot interface (the active window, or the whole screen with the slime left out); the clipboard comes from Klipper.
+- **Jump to clicks** needs to read the mouse from `/dev/input`, which only members of the `input` group can do (`sudo gpasswd -a $USER input`, then log in again). Without it he can't see clicks on other windows, and everything else still works. Being in that group lets any of your programs read your keyboard and mouse, so it's your call.
+- Sound goes through ALSA's default device (PipeWire/PulseAudio).
 
 ### If something goes wrong
 
@@ -98,9 +112,10 @@ The exe runs itself as a worker under a tiny guardian. If the worker crashes, th
 
 ## How it works
 
-- `main.rs`: per-pixel-alpha layered windows (`UpdateLayeredWindow`) for the body (sized to the slime each frame; transparent pixels pass clicks through), goo, the speech bubble and effects; a low-level mouse hook for click-to-jump; the tray icon and panel; idle antics, moods and fullscreen handling; and the frame loop (60 fps, 30 fps when settled).
+- `main.rs`: the frame loop (60 fps, 30 fps when settled), input handling, the panel, idle antics, moods and fullscreen handling, drawing each layer and handing it to the platform.
+- `host/`: the platform layer. `windows.rs`: per-pixel-alpha layered windows (`UpdateLayeredWindow`) for the body (sized to the slime each frame; transparent pixels pass clicks through), goo, the speech bubble, effects and the panel; a low-level mouse hook for click-to-jump; the tray icon; the desktop scan (`EnumWindows`). `wayland.rs`: a layer-shell overlay per monitor with a subsurface per layer, input regions, the keyboard for the panel; `kwin.rs`: the KWin script and D-Bus service, screenshots and the clipboard; `tray.rs`: a StatusNotifierItem; `evdev.rs`: clicks from `/dev/input`.
 - `guardian.rs`: restarts the slime after a crash and logs panics.
-- `desktop.rs`: enumerates top-level windows in z-order and clips each title bar against windows above it, so the slime only stands on parts you can see; also reports monitor rectangles, work-area floors, and fullscreen windows.
+- `desktop.rs`: takes the top-level windows in z-order and clips each title bar against windows above it, so the slime only stands on parts you can see; also monitor rectangles, work-area floors, and fullscreen windows.
 - `physics.rs`: small 2D vector, platform and bounds types.
 - `sim.rs`: the cell world. Each substep:
   - **Whole-body motion**: gravity, throws, jumps and drags move every body cell together one cell at a time, front cells first. Cells that hit something stay put, so the body squashes around obstacles. If enough of the body is blocked it has landed (or hit a wall) and that motion stops dead.

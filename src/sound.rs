@@ -7,6 +7,7 @@
 use super::settings::VOLUME_DEFAULT;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows_sys::Win32::Media::Audio::{
     waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset, waveOutUnprepareHeader, waveOutWrite, CALLBACK_NULL,
     HWAVEOUT, WAVEFORMATEX, WAVEHDR, WAVE_FORMAT_PCM, WAVE_MAPPER, WHDR_DONE,
@@ -158,6 +159,7 @@ fn mixer(rx: Receiver<Cue>) {
 }
 
 /// The open output device and its buffers, written round in turn.
+#[cfg(windows)]
 struct Out {
     hwo: HWAVEOUT,
     headers: Box<[WAVEHDR; BUFFERS]>,
@@ -166,6 +168,7 @@ struct Out {
     next: usize,
 }
 
+#[cfg(windows)]
 impl Out {
     unsafe fn open() -> Option<Out> {
         let fmt = WAVEFORMATEX {
@@ -209,6 +212,7 @@ impl Out {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Out {
     fn drop(&mut self) {
         unsafe {
@@ -218,6 +222,70 @@ impl Drop for Out {
             }
             waveOutClose(self.hwo);
         }
+    }
+}
+
+/// The open output device (ALSA's default, which PipeWire or PulseAudio take), with one
+/// buffer filled at a time and handed over once the device has room for it.
+#[cfg(not(windows))]
+struct Out {
+    pcm: alsa::PCM,
+    buf: [i16; BUFFER_LEN],
+}
+
+#[cfg(not(windows))]
+impl Out {
+    unsafe fn open() -> Option<Out> {
+        use alsa::pcm::{Access, Format, HwParams};
+        use alsa::{Direction, ValueOr};
+        let pcm = alsa::PCM::new("default", Direction::Playback, true).ok()?;
+        {
+            let hw = HwParams::any(&pcm).ok()?;
+            hw.set_channels(1).ok()?;
+            hw.set_rate(RATE, ValueOr::Nearest).ok()?;
+            hw.set_format(Format::s16()).ok()?;
+            hw.set_access(Access::RWInterleaved).ok()?;
+            hw.set_period_size_near(BUFFER_LEN as alsa::pcm::Frames, ValueOr::Nearest).ok()?;
+            hw.set_buffer_size_near((BUFFER_LEN * BUFFERS) as alsa::pcm::Frames).ok()?;
+            pcm.hw_params(&hw).ok()?;
+        }
+        {
+            // Start playing as soon as there's a buffer's worth.
+            let sw = pcm.sw_params_current().ok()?;
+            sw.set_start_threshold(BUFFER_LEN as alsa::pcm::Frames).ok()?;
+            pcm.sw_params(&sw).ok()?;
+        }
+        Some(Out { pcm, buf: [0; BUFFER_LEN] })
+    }
+
+    /// The buffer to fill, if the device has room for it.
+    unsafe fn free(&mut self) -> Option<&mut [i16; BUFFER_LEN]> {
+        match self.pcm.avail_update() {
+            Ok(n) if n >= BUFFER_LEN as alsa::pcm::Frames => Some(&mut self.buf),
+            Ok(_) => None,
+            Err(_) => {
+                // Fell behind (an underrun): start over.
+                let _ = self.pcm.prepare();
+                Some(&mut self.buf)
+            }
+        }
+    }
+
+    /// Sends the buffer just filled.
+    unsafe fn write(&mut self) {
+        if let Ok(io) = self.pcm.io_i16() {
+            if io.writei(&self.buf).is_err() {
+                let _ = self.pcm.prepare();
+                let _ = io.writei(&self.buf);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for Out {
+    fn drop(&mut self) {
+        let _ = self.pcm.drop();
     }
 }
 

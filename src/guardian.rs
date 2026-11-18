@@ -1,7 +1,8 @@
 //! Keeps the slime alive. The exe starts itself again as a worker (`--worker`) and, if
 //! that crashes, starts a fresh one (`--worker --respawned`). Quitting from the menu, or
-//! ending it in Task Manager, stops it for good. Panics are appended to
-//! %APPDATA%\SlimeCompanion\crash.log so they can be fixed.
+//! ending it in Task Manager (or `kill`), stops it for good. Panics are appended to
+//! crash.log in the data folder (%APPDATA%\SlimeCompanion, ~/.config/SlimeCompanion) so
+//! they can be fixed.
 
 use std::collections::VecDeque;
 use std::process::Command;
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 const MAX_RESTARTS: usize = 5;
 
 fn log_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("APPDATA").map(|d| std::path::PathBuf::from(d).join("SlimeCompanion").join("crash.log"))
+    crate::brain::data_dir().map(|d| d.join("crash.log"))
 }
 
 fn log(line: &str) {
@@ -31,11 +32,29 @@ fn log(line: &str) {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 /// Whether an exit code is a crash (an NTSTATUS error, such as an abort after a panic
 /// or an access violation) rather than a normal quit or being ended from Task Manager.
 pub fn is_crash(code: Option<i32>) -> bool {
     // (-1 is what kill tools such as Stop-Process use: deliberate, not a crash.)
     code.is_some_and(|c| (c as u32) >= 0xC000_0000 && c != -1)
+}
+
+/// Whether a worker that ended with `status` crashed: on Unix, killed by an abort (a
+/// panic), a segfault or the like, or a panic's exit code 101. Being sent SIGTERM or
+/// SIGKILL is deliberate.
+#[cfg(unix)]
+fn crashed(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    match status.signal() {
+        Some(sig) => [libc::SIGABRT, libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGTRAP].contains(&sig),
+        None => status.code() == Some(101),
+    }
+}
+
+#[cfg(windows)]
+fn crashed(status: &std::process::ExitStatus) -> bool {
+    is_crash(status.code())
 }
 
 /// Runs `app` under the guardian. `app` gets whether this is a restart after a crash.
@@ -60,18 +79,27 @@ pub fn run(app: fn(bool)) {
     loop {
         let mut cmd = Command::new(&exe);
         cmd.arg("--worker");
+        // The worker goes when the guardian does (it's told to quit tidily).
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
         if respawned {
             cmd.arg("--respawned");
         }
-        let code = match cmd.status() {
-            Ok(status) => status.code(),
+        let status = match cmd.status() {
+            Ok(status) => status,
             // Couldn't start a worker: just run here, unguarded.
             Err(_) => return app(false),
         };
-        if !is_crash(code) {
+        if !crashed(&status) {
             return;
         }
-        log(&format!("worker crashed (exit code {:#x}); restarting", code.unwrap_or(0) as u32));
+        log(&format!("worker crashed ({status}); restarting"));
         let now = Instant::now();
         crashes.push_back(now);
         while crashes.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {

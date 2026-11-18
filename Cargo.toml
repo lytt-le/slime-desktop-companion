@@ -2,10 +2,24 @@
 name = "slime"
 version = "0.1.0"
 edition = "2021"
-description = "A pixel-art slime that lives on your Windows desktop, chats, and gets up to mischief"
+description = "A pixel-art slime that lives on your desktop (Windows, or KDE Plasma on Wayland), chats, and gets up to mischief"
 
 [dependencies]
 serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["xkbcommon"] }
+wayland-client = "0.31"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+ureq = { version = "2", features = ["json"] }
+png = "0.17"
+jpeg-encoder = "0.6"
+alsa = "0.9"
+libc = "0.2"
+serde = "1"
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

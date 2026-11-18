@@ -14,6 +14,7 @@ mod draw;
 mod font;
 mod fx;
 mod guardian;
+mod host;
 mod physics;
 mod settings;
 mod shot;
@@ -23,28 +24,12 @@ mod ui;
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, SelectObject, AC_SRC_ALPHA,
-    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
-};
-use windows_sys::Win32::Media::timeBeginPeriod;
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::HiDpi::{
-    GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture, SetFocus};
-use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::*;
-
+use desktop::Rect;
 use draw::{draw_body, draw_goo, EyeBlock, Look};
+use host::{Event, Host, Layer};
 use physics::{v2, Bounds, V2};
 use sim::{Antic, Noise, World, FRAME};
 use sound::Sfx;
@@ -53,7 +38,6 @@ use brain::Provider;
 use settings::{Settings, MAX_SIZE, MIN_SIZE};
 use ui::{Hit, Section};
 
-const WM_TRAY: u32 = WM_APP + 1;
 /// Longest question the chat box accepts (characters).
 const MAX_QUESTION: usize = 400;
 /// Easter eggs: the most seconds between clicks that still count as a triple click, and
@@ -77,24 +61,6 @@ const REFORMED: [&str; 4] = [
     "Okay, I'm in one piece again. Rude.",
 ];
 
-enum Event {
-    GrabStart,
-    GrabEnd,
-    /// Right-clicked while held: pin him there.
-    Pin,
-    Menu,
-    Reset,
-    Click(V2),
-    /// A character typed on the panel (UTF-16 unit, including control codes).
-    Char(u16),
-    /// Mouse on the settings panel, in pixels from its corner (drags only need x).
-    PanelDown(i32, i32),
-    PanelDrag(i32),
-    PanelUp,
-    /// The panel lost focus or Esc was pressed.
-    PanelClose,
-}
-
 /// Slider position (0..1) for a slime size, and back.
 fn size_to_slider(size: f32) -> f32 {
     (size - MIN_SIZE) / (MAX_SIZE - MIN_SIZE)
@@ -110,153 +76,13 @@ fn slider_to_size(t: f32) -> f32 {
     }
 }
 
-thread_local! {
-    static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
-    /// The right button went down to pin him: its release mustn't open the panel.
-    static PINNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn push(e: Event) {
-    EVENTS.with(|q| q.borrow_mut().push(e));
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    match msg {
-        WM_LBUTTONDOWN => {
-            SetCapture(hwnd);
-            push(Event::GrabStart);
-            0
-        }
-        WM_LBUTTONUP => {
-            ReleaseCapture();
-            push(Event::GrabEnd);
-            0
-        }
-        WM_CAPTURECHANGED => {
-            push(Event::GrabEnd);
-            0
-        }
-        // Right-click while dragging him (he has the mouse captured): a pin.
-        WM_RBUTTONDOWN if GetCapture() == hwnd => {
-            PINNING.with(|p| p.set(true));
-            push(Event::Pin);
-            0
-        }
-        WM_RBUTTONUP => {
-            if !PINNING.with(|p| p.replace(false)) {
-                push(Event::Menu);
-            }
-            0
-        }
-        WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
-        WM_TRAY => {
-            match (lp as u32) & 0xffff {
-                WM_RBUTTONUP | WM_CONTEXTMENU => push(Event::Menu),
-                WM_LBUTTONDBLCLK => push(Event::Reset),
-                _ => {}
-            }
-            0
-        }
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wp, lp),
-    }
-}
-
-/// The settings panel: a focusable window (typing goes to its Chat tab); clicking
-/// anywhere else closes it.
-unsafe extern "system" fn panel_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let (x, y) = ((lp & 0xffff) as i16 as i32, ((lp >> 16) & 0xffff) as i16 as i32);
-    match msg {
-        WM_LBUTTONDOWN => {
-            SetCapture(hwnd);
-            push(Event::PanelDown(x, y));
-            0
-        }
-        WM_MOUSEMOVE if wp & 1 != 0 => {
-            push(Event::PanelDrag(x));
-            0
-        }
-        WM_LBUTTONUP => {
-            ReleaseCapture();
-            push(Event::PanelUp);
-            0
-        }
-        WM_ACTIVATE if wp & 0xffff == WA_INACTIVE as usize => {
-            push(Event::PanelClose);
-            0
-        }
-        WM_KEYDOWN if wp == 0x1b => {
-            push(Event::PanelClose);
-            0
-        }
-        WM_CHAR => {
-            push(Event::Char(wp as u16));
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wp, lp),
-    }
-}
-
 /// Where the panel goes: at the cursor, kept inside that monitor's work area.
-fn panel_origin(at: V2, w: i32, h: i32) -> (i32, i32) {
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-    unsafe {
-        let mon = MonitorFromPoint(POINT { x: at.x as i32, y: at.y as i32 }, MONITOR_DEFAULTTONEAREST);
-        let mut mi: MONITORINFO = std::mem::zeroed();
-        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(mon, &mut mi);
-        let r = mi.rcWork;
-        let x = (at.x as i32 + 8).min(r.right - w).max(r.left);
-        // Below the cursor if it fits, otherwise above it (e.g. from the tray).
-        let y = if at.y as i32 + h <= r.bottom { at.y as i32 } else { at.y as i32 - h };
-        (x, y.min(r.bottom - h).max(r.top))
-    }
-}
-
-/// Text on the clipboard, if any.
-unsafe fn clipboard_text(hwnd: HWND) -> Option<String> {
-    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-    const CF_UNICODETEXT: u32 = 13;
-    if OpenClipboard(hwnd) == 0 {
-        return None;
-    }
-    let mut out = None;
-    let h = GetClipboardData(CF_UNICODETEXT);
-    if !h.is_null() {
-        let p = GlobalLock(h) as *const u16;
-        if !p.is_null() {
-            let mut n = 0;
-            while *p.add(n) != 0 {
-                n += 1;
-            }
-            out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
-            GlobalUnlock(h);
-        }
-    }
-    CloseClipboard();
-    out
-}
-
-unsafe extern "system" fn mouse_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if code >= 0 && wp as u32 == WM_LBUTTONDOWN {
-        let info = &*(lp as *const MSLLHOOKSTRUCT);
-        push(Event::Click(v2(info.pt.x as f32, info.pt.y as f32)));
-    }
-    CallNextHookEx(std::ptr::null_mut(), code, wp, lp)
-}
-
-fn cursor() -> V2 {
-    let mut p = POINT { x: 0, y: 0 };
-    unsafe { GetCursorPos(&mut p) };
-    v2(p.x as f32, p.y as f32)
+fn panel_origin(scan: &desktop::Scan, at: V2, w: i32, h: i32) -> (i32, i32) {
+    let r = scan.monitor_near(at.x, at.y).map_or(scan.primary_work, |m| scan.work[m]);
+    let x = (at.x as i32 + 8).min(r.right - w).max(r.left);
+    // Below the cursor if it fits, otherwise above it (e.g. from the tray).
+    let y = if at.y as i32 + h <= r.bottom { at.y as i32 } else { at.y as i32 - h };
+    (x, y.min(r.bottom - h).max(r.top))
 }
 
 struct Rng(u32);
@@ -325,50 +151,8 @@ impl Eyes {
     }
 }
 
-/// A 32-bit drawing buffer selected into a memory DC. `cap` is its width (and row
-/// stride), `rows` its height.
-struct Surface {
-    dc: HDC,
-    bmp: HBITMAP,
-    bits: *mut u32,
-    cap: usize,
-    rows: usize,
-}
-
-impl Surface {
-    unsafe fn pixels(&self) -> &'static mut [u32] {
-        std::slice::from_raw_parts_mut(self.bits, self.cap * self.rows)
-    }
-
-    unsafe fn free(&self) {
-        DeleteDC(self.dc);
-        DeleteObject(self.bmp);
-    }
-}
-
-unsafe fn make_surface(screen_dc: HDC, cap: usize) -> Surface {
-    make_surface_rect(screen_dc, cap, cap)
-}
-
-unsafe fn make_surface_rect(screen_dc: HDC, cap: usize, rows: usize) -> Surface {
-    let mut bmi: BITMAPINFO = std::mem::zeroed();
-    bmi.bmiHeader = BITMAPINFOHEADER {
-        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: cap as i32,
-        biHeight: -(rows as i32),
-        biPlanes: 1,
-        biBitCount: 32,
-        biCompression: BI_RGB,
-        ..std::mem::zeroed()
-    };
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let bmp = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
-    let dc = CreateCompatibleDC(screen_dc);
-    SelectObject(dc, bmp);
-    Surface { dc, bmp, bits: bits as *mut u32, cap, rows }
-}
-
-unsafe fn make_icon(screen_dc: HDC) -> HICON {
+/// The slime drawn small, for the tray icon: premultiplied BGRA, `S` x `S`.
+fn icon_pixels() -> (Vec<u32>, usize) {
     const S: usize = 32;
     let mut w = World::new(&Bounds { left: 0.0, top: 0.0, right: S as f32, bottom: S as f32 }, 2.0, 12.0, 0.0);
     w.spawn(v2(16.0, 19.0));
@@ -384,19 +168,20 @@ unsafe fn make_icon(screen_dc: HDC) -> HICON {
             }
         }
     }
-    let surf = make_surface(screen_dc, S);
-    for (i, &p) in px.iter().enumerate() {
-        let a = p >> 24;
-        let un = |c: u32| if a == 0 { 0 } else { (c * 255 / a).min(255) };
-        *surf.bits.add(i) = (a << 24) | (un((p >> 16) & 255) << 16) | (un((p >> 8) & 255) << 8) | un(p & 255);
+    (px, S)
+}
+
+/// A drawing buffer: `cap` wide (and the row stride), `rows` high.
+struct Canvas {
+    px: Vec<u32>,
+    cap: usize,
+    rows: usize,
+}
+
+impl Canvas {
+    fn new(cap: usize, rows: usize) -> Canvas {
+        Canvas { px: vec![0; cap * rows], cap, rows }
     }
-    let color = SelectObject(surf.dc, CreateBitmap(1, 1, 1, 1, std::ptr::null()));
-    let mask = CreateBitmap(S as i32, S as i32, 1, 1, std::ptr::null());
-    let info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
-    let icon = CreateIconIndirect(&info);
-    DeleteObject(mask);
-    DeleteObject(color);
-    icon
 }
 
 fn monitor_rects(scan: &desktop::Scan) -> Vec<(i32, i32, i32, i32)> {
@@ -405,9 +190,7 @@ fn monitor_rects(scan: &desktop::Scan) -> Vec<(i32, i32, i32, i32)> {
 
 /// The fullscreen window filling the monitor at `p` (screen px), if there is one.
 fn fullscreen_at(scan: &desktop::Scan, p: V2) -> Option<isize> {
-    let m = scan.monitors.iter().position(|m| {
-        p.x >= m.left as f32 && p.x < m.right as f32 && p.y >= m.top as f32 && p.y < m.bottom as f32
-    })?;
+    let m = scan.monitors.iter().position(|m| m.contains(p.x, p.y))?;
     scan.fullscreen.iter().find(|f| f.1 == m).map(|f| f.0)
 }
 
@@ -415,8 +198,7 @@ fn fullscreen_at(scan: &desktop::Scan, p: V2) -> Option<isize> {
 /// highest the slime's middle can be there and still be in the opening between both
 /// work areas; and the top of the screens it mustn't rise past (screen px, `r` = his radius).
 fn leap_gate(scan: &desktop::Scan, from: V2, to: usize, r: f32) -> (Option<V2>, f32) {
-    let inside = |m: &RECT| from.x >= m.left as f32 && from.x < m.right as f32;
-    let Some(here) = scan.monitors.iter().position(|m| inside(m) && from.y >= m.top as f32 && from.y < m.bottom as f32) else {
+    let Some(here) = scan.monitors.iter().position(|m| m.contains(from.x, from.y)) else {
         return (None, scan.bounds.top);
     };
     let (a, b) = (scan.work[here], scan.work[to]);
@@ -432,35 +214,8 @@ fn leap_gate(scan: &desktop::Scan, from: V2, to: usize, r: f32) -> (Option<V2>, 
     (Some(v2(x, a.bottom.min(b.bottom) as f32 - r * 1.5)), ceiling)
 }
 
-/// Puts our windows just behind `fs` (out of always-on-top), or back on top with `None`.
-unsafe fn tuck_behind(hwnds: &[HWND], fs: Option<isize>) {
-    let after = fs.map_or(HWND_TOPMOST, |f| f as HWND);
-    for &h in hwnds {
-        SetWindowPos(h, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-}
-
-fn spawn_point(work: &RECT, r0: f32) -> V2 {
+fn spawn_point(work: &Rect, r0: f32) -> V2 {
     v2((work.left + work.right) as f32 * 0.5, work.top as f32 + r0 * 2.0)
-}
-
-unsafe fn layered_window(class: &[u16], title: &[u16], hinst: *mut c_void, extra: u32) -> HWND {
-    let hwnd = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | extra,
-        class.as_ptr(),
-        title.as_ptr(),
-        WS_POPUP,
-        0,
-        0,
-        1,
-        1,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        hinst,
-        std::ptr::null(),
-    );
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    hwnd
 }
 
 fn main() {
@@ -469,87 +224,21 @@ fn main() {
 
 /// The slime itself (`respawned`: restarted after a crash).
 fn app(respawned: bool) {
-    unsafe {
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        timeBeginPeriod(1);
-        let dpi = GetDpiForSystem() as f32 / 96.0;
-        let hinst = GetModuleHandleW(std::ptr::null());
-        let class = wide("SlimeCompanion");
-        let wc = WNDCLASSW {
-            style: 0,
-            lpfnWndProc: Some(wndproc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: hinst,
-            hIcon: std::ptr::null_mut(),
-            hCursor: LoadCursorW(std::ptr::null_mut(), IDC_HAND),
-            hbrBackground: std::ptr::null_mut(),
-            lpszMenuName: std::ptr::null(),
-            lpszClassName: class.as_ptr(),
-        };
-        RegisterClassW(&wc);
-        let title = wide("Slime");
-        let goo_hwnd = layered_window(&class, &title, hinst, WS_EX_TRANSPARENT);
-        let hwnd = layered_window(&class, &title, hinst, 0);
-        let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), hinst, 0);
-        // Speech bubble (click-through).
-        let bubble_hwnd = layered_window(&class, &title, hinst, WS_EX_TRANSPARENT);
-        // Z's, the cigarette and its smoke (click-through, above the body).
-        let fx_hwnd = layered_window(&class, &title, hinst, WS_EX_TRANSPARENT);
-        let panel_class = wide("SlimeCompanionPanel");
-        let pwc = WNDCLASSW {
-            lpfnWndProc: Some(panel_wndproc),
-            hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
-            lpszClassName: panel_class.as_ptr(),
-            ..wc
-        };
-        RegisterClassW(&pwc);
-        let panel_hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            panel_class.as_ptr(),
-            title.as_ptr(),
-            WS_POPUP,
-            0,
-            0,
-            1,
-            1,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            hinst,
-            std::ptr::null(),
-        );
-
-        let screen_dc = GetDC(std::ptr::null_mut());
-        let surface = make_surface(screen_dc, (1400.0 * dpi) as usize);
-        let pixels = std::slice::from_raw_parts_mut(surface.bits, surface.cap * surface.cap);
-        // Goo can be left anywhere, so its window can span the whole desktop.
-        let goo_size = |b: &Bounds| ((b.right - b.left).ceil() as usize + 8, (b.bottom - b.top).ceil() as usize + 8);
-        let ui_surface = make_surface(screen_dc, (640.0 * dpi) as usize);
-        let ui_pixels = std::slice::from_raw_parts_mut(ui_surface.bits, ui_surface.cap * ui_surface.cap);
-        let panel_surface = make_surface(screen_dc, (1000.0 * dpi) as usize);
-        let fx_surface = make_surface(screen_dc, (1200.0 * dpi) as usize);
-        let fx_pixels = std::slice::from_raw_parts_mut(fx_surface.bits, fx_surface.cap * fx_surface.cap);
-        let panel_pixels = std::slice::from_raw_parts_mut(panel_surface.bits, panel_surface.cap * panel_surface.cap);
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
-
-        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = 1;
-        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAY;
-        nid.hIcon = make_icon(screen_dc);
-        for (d, s) in nid.szTip.iter_mut().zip(wide("Slime — right-click for settings")) {
-            *d = s;
+    {
+        let (icon, icon_size) = icon_pixels();
+        let mut host = Host::new(&icon, icon_size);
+        let dpi = host.dpi();
+        if !host.sees_clicks() {
+            eprintln!("slime: can't see clicks on other windows, so he won't jump to them (see README: Linux)");
         }
-        Shell_NotifyIconW(NIM_ADD, &nid);
+        // Drawing buffers for each layer (the goo's spans the whole desktop).
+        let mut body = Canvas::new((1400.0 * dpi) as usize, (1400.0 * dpi) as usize);
+        let goo_size = |b: &Bounds| ((b.right - b.left).ceil() as usize + 8, (b.bottom - b.top).ceil() as usize + 8);
+        let mut bubble = Canvas::new((640.0 * dpi) as usize, (640.0 * dpi) as usize);
+        let mut panel = Canvas::new((1000.0 * dpi) as usize, (1000.0 * dpi) as usize);
+        let mut fx_canvas = Canvas::new((1200.0 * dpi) as usize, (1200.0 * dpi) as usize);
 
-        let mut scan = desktop::scan(hwnd);
+        let mut scan = host.scan();
         let base_r0 = 56.0 * dpi;
         let cell = (3.0 * dpi).round().max(2.0);
         let new_world = |scan: &desktop::Scan| {
@@ -562,8 +251,7 @@ fn app(respawned: bool) {
         };
         let mut world = new_world(&scan);
         let (gw, gh) = goo_size(&scan.bounds);
-        let mut goo_surface = make_surface_rect(screen_dc, gw, gh);
-        let mut goo_pixels = goo_surface.pixels();
+        let mut goo = Canvas::new(gw, gh);
         let mut eyes = Eyes::new(&world);
         let mut rng = Rng(0x9E37_79B9 ^ (std::process::id() | 1));
         let mut prev_windows: HashMap<isize, (i32, i32)> = HashMap::new();
@@ -643,23 +331,15 @@ fn app(respawned: bool) {
         let mut acc = 0.0f32;
         let mut calm_for = 0.0f32;
         let mut lost_for = 0.0f32;
-        let mut msg: MSG = std::mem::zeroed();
 
         'main: loop {
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                if msg.message == WM_QUIT {
-                    break 'main;
-                }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-
-            let events: Vec<Event> = EVENTS.with(|q| q.borrow_mut().drain(..).collect());
+            let events = host.events();
             let mut close_panel = false;
             for e in events {
                 match e {
+                    Event::Quit => break 'main,
                     Event::GrabStart => {
-                        let p = cursor();
+                        let p = host.cursor();
                         // Grabbed again: the pin comes out.
                         if let Some(at) = world.pin_point() {
                             fx.pull_pin(at, world.scale);
@@ -684,7 +364,7 @@ fn app(respawned: bool) {
                     }
                     Event::GrabEnd => {
                         let now = Instant::now();
-                        let p = cursor();
+                        let p = host.cursor();
                         let throw = trail
                             .iter()
                             .find(|(t, _)| now.duration_since(*t).as_secs_f32() < 0.06)
@@ -722,7 +402,7 @@ fn app(respawned: bool) {
                             && ly >= 0
                             && (lx as usize) < w
                             && (ly as usize) < h
-                            && pixels[ly as usize * surface.cap + lx as usize] >> 24 > 0;
+                            && body.px[ly as usize * body.cap + lx as usize] >> 24 > 0;
                         // (Not while chatting or in settings: clicks are for those then.)
                         // (Nor for clicks in a fullscreen app.)
                         if cfg.jump && !on_slime && panel_at.is_none() && fullscreen_at(&scan, p).is_none() {
@@ -736,7 +416,7 @@ fn app(respawned: bool) {
                             chat_text.pop();
                         }
                         0x16 => {
-                            if let Some(t) = clipboard_text(panel_hwnd) {
+                            if let Some(t) = host.clipboard() {
                                 chat_text.push_str(&brain::clean_input(&t));
                                 chat_text.truncate(MAX_QUESTION);
                             }
@@ -802,7 +482,7 @@ fn app(respawned: bool) {
                             world.release(V2::ZERO);
                         }
                         let (pw, ph) = ui::panel_size(font_px);
-                        panel_at = Some(panel_origin(cursor(), pw as i32, ph as i32));
+                        panel_at = Some(panel_origin(&scan, host.cursor(), pw as i32, ph as i32));
                         panel_note = None;
                         panel_drag = None;
                         key_cache = None;
@@ -810,7 +490,7 @@ fn app(respawned: bool) {
                         // It opens on the Chat tab; start Claude Code now so answers are quick.
                         panel_tab = ui::TAB_CHAT;
                         // What "Ask about this page" will capture (before the panel takes focus).
-                        shot_target = shot::foreground_window(&[hwnd, goo_hwnd, bubble_hwnd, fx_hwnd, panel_hwnd]);
+                        shot_target = host.shot_target();
                         chat_blink = 0.0;
                         if let Ok(b) = backend(&cfg) {
                             brain.warm(&b);
@@ -857,13 +537,13 @@ fn app(respawned: bool) {
                                 cfg.save();
                             }
                             Some(Hit::Shoot) => {
-                                let at = cursor();
-                                let target = shot_target
-                                    .clone()
-                                    .unwrap_or_else(|| shot::monitor_at(POINT { x: at.x as i32, y: at.y as i32 }));
-                                let ours = [hwnd, goo_hwnd, bubble_hwnd, fx_hwnd, panel_hwnd];
+                                let at = host.cursor();
+                                let target = match shot_target.clone() {
+                                    Some(t) => t,
+                                    None => host.monitor_target(at),
+                                };
                                 let max = (ui::THUMB_MAX.0 * font_px, ui::THUMB_MAX.1 * font_px);
-                                match shot::capture(&target, &ours, max) {
+                                match host.capture(&target, max) {
                                     Ok(s) => attachment = Some(s),
                                     Err(e) => log_chat(&mut chat_log, false, &format!("I couldn't take a screenshot: {e}")),
                                 }
@@ -937,7 +617,7 @@ fn app(respawned: bool) {
                                 panel_note = None;
                             }
                             Some(Hit::PasteKey) => {
-                                let text = clipboard_text(panel_hwnd).map(|t| t.trim().to_string()).unwrap_or_default();
+                                let text = host.clipboard().map(|t| t.trim().to_string()).unwrap_or_default();
                                 if cfg.provider.looks_like_key(&text) {
                                     match brain::save_key(cfg.provider, &text) {
                                         Ok(()) => panel_note = note("Key saved. Ask me anything!"),
@@ -980,7 +660,7 @@ fn app(respawned: bool) {
             }
             if close_panel {
                 if panel_at.take().is_some() {
-                    ShowWindow(panel_hwnd, SW_HIDE);
+                    host.hide(Layer::Panel);
                     if panel_drag.take().is_some() {
                         cfg.save();
                     }
@@ -992,7 +672,7 @@ fn app(respawned: bool) {
             last = now;
             acc += dt;
 
-            scan = desktop::scan(hwnd);
+            scan = host.scan();
             // Screen layout changed (monitor plugged in, resolution): rebuild the world.
             let b = scan.bounds;
             if ((b.right - b.left) / cell).ceil() as i32 != world.w || ((b.bottom - b.top) / cell).ceil() as i32 != world.h
@@ -1000,10 +680,8 @@ fn app(respawned: bool) {
                 world = new_world(&scan);
                 eyes = Eyes::new(&world);
                 let (gw, gh) = goo_size(&b);
-                if gw > goo_surface.cap || gh > goo_surface.rows {
-                    goo_surface.free();
-                    goo_surface = make_surface_rect(screen_dc, gw, gh);
-                    goo_pixels = goo_surface.pixels();
+                if gw > goo.cap || gh > goo.rows {
+                    goo = Canvas::new(gw, gh);
                 }
             }
             // What it's resting on must be judged against where the windows *were*,
@@ -1067,7 +745,7 @@ fn app(respawned: bool) {
                 }
             }
             if hide != hidden_behind {
-                tuck_behind(&[hwnd, goo_hwnd, bubble_hwnd, fx_hwnd], hide);
+                host.hide_behind(hide);
                 hidden_behind = hide;
             }
 
@@ -1076,7 +754,7 @@ fn app(respawned: bool) {
                 calm_for = 0.0;
             }
 
-            let mouse = cursor();
+            let mouse = host.cursor();
             if world.grab.is_some() && !world.pinned {
                 world.drag_to(mouse);
                 trail.push_back((now, mouse));
@@ -1248,30 +926,20 @@ fn app(respawned: bool) {
                 let b = (x0 - 1, y0 - 1, x1 + 1, y1 + 1);
                 let mut face = eyes.blocks(&world);
                 fx.style_eyes(&mut face);
-                let (w, h) = draw_body(pixels, surface.cap, &world, b, &face);
+                let (w, h) = draw_body(&mut body.px, body.cap, &world, b, &face);
                 let o = world.to_screen(v2(b.0 as f32, b.1 as f32));
                 drawn = (o.x as i32, o.y as i32, w, h);
-                let dst = POINT { x: o.x as i32, y: o.y as i32 };
-                let size = SIZE { cx: w as i32, cy: h as i32 };
-                let src = POINT { x: 0, y: 0 };
-                UpdateLayeredWindow(hwnd, screen_dc, &dst, &size, surface.dc, &src, 0, &blend, ULW_ALPHA);
+                host.show(Layer::Body, o.x as i32, o.y as i32, w, h, &body.px, body.cap);
             }
 
             // Effects window.
-            match fx.draw(fx_pixels, fx_surface.cap, fx_surface.cap, &world) {
+            match fx.draw(&mut fx_canvas.px, fx_canvas.cap, fx_canvas.rows, &world) {
                 Some((x, y, w, h)) => {
-                    let dst = POINT { x, y };
-                    let size = SIZE { cx: w as i32, cy: h as i32 };
-                    let src = POINT { x: 0, y: 0 };
-                    UpdateLayeredWindow(fx_hwnd, screen_dc, &dst, &size, fx_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                    host.show(Layer::Fx, x, y, w, h, &fx_canvas.px, fx_canvas.cap);
                     fx_shown = true;
                 }
                 None if fx_shown => {
-                    fx_pixels[0] = 0;
-                    let dst = POINT { x: 0, y: 0 };
-                    let size = SIZE { cx: 1, cy: 1 };
-                    let src = POINT { x: 0, y: 0 };
-                    UpdateLayeredWindow(fx_hwnd, screen_dc, &dst, &size, fx_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                    host.hide(Layer::Fx);
                     fx_shown = false;
                 }
                 None => {}
@@ -1317,18 +985,11 @@ fn app(respawned: bool) {
                 let (bw, bh) = ui::bubble_size(&lines, font_px);
                 let (bx, by) = (place_x(bw), (sy - bh as i32).max(min_y));
                 let tail = (head_x - bx) as f32 / bw as f32;
-                ui::draw_bubble(ui_pixels, ui_surface.cap, &lines, shown, tail, font_px);
-                let dst = POINT { x: bx, y: by };
-                let size = SIZE { cx: bw as i32, cy: bh as i32 };
-                let src = POINT { x: 0, y: 0 };
-                UpdateLayeredWindow(bubble_hwnd, screen_dc, &dst, &size, ui_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                ui::draw_bubble(&mut bubble.px, bubble.cap, &lines, shown, tail, font_px);
+                host.show(Layer::Bubble, bx, by, bw, bh, &bubble.px, bubble.cap);
                 bubble_shown = true;
             } else if bubble_shown {
-                ui_pixels[0] = 0;
-                let dst = POINT { x: 0, y: 0 };
-                let size = SIZE { cx: 1, cy: 1 };
-                let src = POINT { x: 0, y: 0 };
-                UpdateLayeredWindow(bubble_hwnd, screen_dc, &dst, &size, ui_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                host.hide(Layer::Bubble);
                 bubble_shown = false;
             }
 
@@ -1343,7 +1004,7 @@ fn app(respawned: bool) {
                 let key = key_cache.get_or_insert_with(|| brain::api_key(cfg.provider));
                 let (key_text, status) = panel_texts(&cfg, key.as_ref(), &brain.session_state(), brain::claude_exe().is_some());
                 let status = panel_note.as_ref().map_or(status, |n| n.0.clone());
-                let m = cursor();
+                let m = host.cursor();
                 let keyb = cfg.provider.needs_key();
                 let hover = panel_drag
                     .or_else(|| ui::panel_hit(m.x as i32 - px0, m.y as i32 - py0, panel_tab, keyb, attachment.is_some(), &cfg.collapsed, font_px));
@@ -1391,16 +1052,11 @@ fn app(respawned: bool) {
                     collapsed: cfg.collapsed,
                     hover,
                 };
-                let (pw, ph) = ui::draw_panel(panel_pixels, panel_surface.cap, &view, font_px);
-                let dst = POINT { x: px0, y: py0 };
-                let size = SIZE { cx: pw as i32, cy: ph as i32 };
-                let src = POINT { x: 0, y: 0 };
-                UpdateLayeredWindow(panel_hwnd, screen_dc, &dst, &size, panel_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                let (pw, ph) = ui::draw_panel(&mut panel.px, panel.cap, &view, font_px);
+                host.show(Layer::Panel, px0, py0, pw, ph, &panel.px, panel.cap);
                 if panel_show {
                     panel_show = false;
-                    ShowWindow(panel_hwnd, SW_SHOW);
-                    SetForegroundWindow(panel_hwnd);
-                    SetFocus(panel_hwnd);
+                    host.focus_panel();
                 }
                 calm_for = 0.0;
             }
@@ -1412,20 +1068,13 @@ fn app(respawned: bool) {
                 match world.goo_bounds() {
                     Some((x0, y0, x1, y1)) => {
                         let b = (x0, y0, x1, y1);
-                        let (w, h) = draw_goo(goo_pixels, goo_surface.cap, &world, b);
+                        let (w, h) = draw_goo(&mut goo.px, goo.cap, &world, b);
                         let o = world.to_screen(v2(x0 as f32, y0 as f32));
-                        let dst = POINT { x: o.x as i32, y: o.y as i32 };
-                        let size = SIZE { cx: w as i32, cy: h as i32 };
-                        let src = POINT { x: 0, y: 0 };
-                        UpdateLayeredWindow(goo_hwnd, screen_dc, &dst, &size, goo_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                        host.show(Layer::Goo, o.x as i32, o.y as i32, w, h, &goo.px, goo.cap);
                         goo_shown = true;
                     }
                     None if goo_shown => {
-                        goo_pixels[0] = 0;
-                        let dst = POINT { x: 0, y: 0 };
-                        let size = SIZE { cx: 1, cy: 1 };
-                        let src = POINT { x: 0, y: 0 };
-                        UpdateLayeredWindow(goo_hwnd, screen_dc, &dst, &size, goo_surface.dc, &src, 0, &blend, ULW_ALPHA);
+                        host.hide(Layer::Goo);
                         goo_shown = false;
                     }
                     None => {}
@@ -1439,16 +1088,8 @@ fn app(respawned: bool) {
             }
             let frame = if calm_for > 1.5 { 1.0 / 30.0 } else { FRAME };
             let wait = Duration::from_secs_f32(frame).saturating_sub(now.elapsed());
-            MsgWaitForMultipleObjects(0, std::ptr::null(), 0, wait.as_millis() as u32, QS_ALLINPUT);
+            host.wait(wait);
         }
-
-        UnhookWindowsHookEx(hook);
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        DestroyWindow(hwnd);
-        DestroyWindow(goo_hwnd);
-        DestroyWindow(bubble_hwnd);
-        DestroyWindow(fx_hwnd);
-        DestroyWindow(panel_hwnd);
     }
 }
 

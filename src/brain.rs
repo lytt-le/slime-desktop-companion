@@ -3,9 +3,10 @@
 //!   (`claude -p` with streamed JSON in and out, so only the first answer pays for startup);
 //! - the Anthropic Messages API with your own key;
 //! - the DeepSeek API with your own key.
-//! Requests run on a worker thread (WinHTTP or the Claude Code child process, so no extra
-//! native deps); the main loop polls for replies so the slime never stops jiggling while it thinks.
+//! Requests run on a worker thread (WinHTTP on Windows, ureq elsewhere, or the Claude Code
+//! child process); the main loop polls for replies so the slime never stops jiggling while it thinks.
 
+#[cfg(windows)]
 use std::ffi::c_void;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -15,7 +16,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::GetLastError;
+#[cfg(windows)]
 use windows_sys::Win32::Networking::WinHttp::*;
 
 use super::font::{to_ascii, wrap};
@@ -27,7 +30,7 @@ const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
 /// Longest wait for one answer before giving up on the session.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
 
-const SYSTEM: &str = "You are Slime, a small, cheerful green slime who lives on the user's Windows desktop. \
+const SYSTEM: &str = "You are Slime, a small, cheerful green slime who lives on the user's computer desktop. \
 You sit on top of their windows, wobble about, and sometimes share fun facts. Answer the user's questions \
 helpfully and accurately, in character: warm and a little playful, now and then mentioning being a slime, \
 but never at the expense of a clear, correct answer. Your replies appear in a small pixel-art speech bubble, \
@@ -189,9 +192,17 @@ impl Provider {
     }
 }
 
-/// %APPDATA%\SlimeCompanion, where settings and pasted keys live.
+/// Where settings and pasted keys live: %APPDATA%\SlimeCompanion on Windows,
+/// ~/.config/SlimeCompanion (or $XDG_CONFIG_HOME) elsewhere.
 pub fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("SlimeCompanion"))
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    base.map(|d| d.join("SlimeCompanion"))
 }
 
 /// Where a key comes from, for showing in the settings panel.
@@ -214,11 +225,18 @@ pub fn api_key(p: Provider) -> Option<(String, KeySource)> {
     (!k.is_empty()).then_some((k, KeySource::Env))
 }
 
-/// Saves a pasted key in plain text under %APPDATA%\SlimeCompanion.
+/// Saves a pasted key in plain text in the data folder (readable only by you on Linux).
 pub fn save_key(p: Provider, key: &str) -> Result<(), String> {
-    let dir = data_dir().ok_or("no APPDATA folder")?;
+    let dir = data_dir().ok_or("no settings folder")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(p.key_file()), key.trim()).map_err(|e| e.to_string())
+    let path = dir.join(p.key_file());
+    std::fs::write(&path, key.trim()).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 pub fn forget_key(p: Provider) {
@@ -239,11 +257,12 @@ pub fn claude_exe() -> Option<PathBuf> {
     static EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
     EXE.get_or_init(|| {
         let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-        if let Some(home) = std::env::var_os("USERPROFILE") {
+        let (home, name) = if cfg!(windows) { ("USERPROFILE", "claude.exe") } else { ("HOME", "claude") };
+        if let Some(home) = std::env::var_os(home) {
             dirs.push(PathBuf::from(&home).join(".local").join("bin"));
             dirs.push(PathBuf::from(&home).join(".claude").join("local"));
         }
-        dirs.into_iter().map(|d| d.join("claude.exe")).find(|p| p.is_file())
+        dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
     })
     .clone()
 }
@@ -531,16 +550,14 @@ struct Session {
 
 impl Session {
     fn start(exe: &std::path::Path, model: &str, web: bool) -> Result<Session, String> {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         // A neutral working directory, so no project's CLAUDE.md or settings join in.
         let cwd = data_dir().unwrap_or_else(std::env::temp_dir);
         let _ = std::fs::create_dir_all(&cwd);
         // A chat buddy, not an agent: at most web search and page reading (no files, shell,
         // MCP servers, skills or saved transcripts).
         let tools = if web { "WebSearch,WebFetch" } else { "" };
-        let mut child = Command::new(exe)
-            .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
+        let mut cmd = Command::new(exe);
+        cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
             .args(["--model", model, "--system-prompt", &system(web)])
             .args(["--tools", tools, "--allowedTools", tools])
             .args(["--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"])
@@ -548,10 +565,9 @@ impl Session {
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| format!("couldn't start Claude Code: {e}"))?;
+            .stderr(Stdio::piped());
+        hide_and_tie(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("couldn't start Claude Code: {e}"))?;
         close_with_us(&child);
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -623,8 +639,30 @@ impl Drop for Session {
     }
 }
 
+/// No console window for it (Windows); on Linux, it's killed when we end (even in a crash).
+fn hide_and_tie(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(windows))]
+fn close_with_us(_child: &Child) {}
+
 /// Puts `child` in a job that Windows kills when this process ends, so a Claude Code
 /// session never outlives the slime (even if it crashes).
+#[cfg(windows)]
 fn close_with_us(child: &Child) {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::JobObjects::*;
@@ -1012,11 +1050,44 @@ fn parse_openai_reply(text: &str) -> Reply {
     }
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// A blocking HTTPS POST. Returns the status code and response body. `headers` are
+/// `Name: value` lines separated by CRLF.
+#[cfg(not(windows))]
+fn post(host: &str, path: &str, headers: &str, body: &str) -> Result<(u32, String), String> {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .user_agent("SlimeCompanion/1.0")
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_write(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(60))
+            .try_proxy_from_env(true)
+            .build()
+    });
+    let mut req = agent.post(&format!("https://{host}{path}"));
+    for line in headers.split("\r\n").filter(|l| !l.trim().is_empty()) {
+        if let Some((k, v)) = line.split_once(':') {
+            req = req.set(k.trim(), v.trim());
+        }
+    }
+    let resp = match req.send_string(body) {
+        Ok(r) => r,
+        // Error statuses still have a body worth reading.
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format!("request failed: {e}")),
+    };
+    let status = resp.status() as u32;
+    let text = resp.into_string().map_err(|e| format!("read failed: {e}"))?;
+    Ok((status, text))
+}
+
 /// A blocking HTTPS POST via WinHTTP. Returns the status code and response body.
+#[cfg(windows)]
 fn post(host: &str, path: &str, headers: &str, body: &str) -> Result<(u32, String), String> {
     struct Handle(*mut c_void);
     impl Drop for Handle {
@@ -1340,12 +1411,15 @@ answer: {t}");
         let exe = claude_exe().expect("Claude Code not installed");
         let mut s = Session::start(&exe, "haiku", false).unwrap();
         // It dies with us: it's inside the kill-on-close job.
-        let mut in_job = 0;
-        unsafe {
-            use std::os::windows::io::AsRawHandle;
-            windows_sys::Win32::System::JobObjects::IsProcessInJob(s.child.as_raw_handle() as _, std::ptr::null_mut(), &mut in_job);
+        #[cfg(windows)]
+        {
+            let mut in_job = 0;
+            unsafe {
+                use std::os::windows::io::AsRawHandle;
+                windows_sys::Win32::System::JobObjects::IsProcessInJob(s.child.as_raw_handle() as _, std::ptr::null_mut(), &mut in_job);
+            }
+            assert_ne!(in_job, 0, "Claude Code isn't in the job");
         }
-        assert_ne!(in_job, 0, "Claude Code isn't in the job");
         let t0 = std::time::Instant::now();
         let a = s.ask("My favourite colour is teal. Just say ok.", None, &|_| {}).unwrap();
         let t1 = std::time::Instant::now();

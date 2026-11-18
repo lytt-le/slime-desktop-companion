@@ -1,18 +1,30 @@
 //! "Ask about this page": captures the window the user was looking at (or their monitor),
-//! scaled to what vision models use, encoded as PNG (JPEG if that's too big) with GDI+,
-//! plus a little thumbnail for the chat tab. The slime's own windows are kept out of it.
+//! scaled to what vision models use, encoded as PNG (JPEG if that's too big), plus a
+//! little thumbnail for the chat tab. The slime's own windows are kept out of it.
+//!
+//! On Windows the capture is GDI and the encoding GDI+; on Linux KWin takes the picture
+//! (see `host/kwin.rs`) and it's encoded here in Rust.
 
+#[cfg(windows)]
 use std::ffi::c_void;
 
+#[cfg(windows)]
 use windows_sys::core::GUID;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+#[cfg(windows)]
 use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
+#[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::*;
+#[cfg(windows)]
 use windows_sys::Win32::Graphics::GdiPlus::{
     EncoderParameter, EncoderParameters, GdipCreateBitmapFromScan0, GdipDisposeImage, GdipSaveImageToFile, GdiplusShutdown,
     GdiplusStartup, GdiplusStartupInput, GpBitmap, GpImage,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+use crate::desktop::Rect;
 
 /// Longest side sent to the model (larger images are scaled down by the APIs anyway).
 const MAX_EDGE: usize = 1568;
@@ -22,8 +34,11 @@ const MAX_BYTES: usize = 3_500_000;
 /// What to capture: a screen rectangle and a name for it.
 #[derive(Clone)]
 pub struct Target {
-    pub rect: RECT,
+    pub rect: Rect,
     pub label: String,
+    /// The platform's handle for the window, where capturing it needs one (KWin's id).
+    #[cfg_attr(windows, allow(dead_code))]
+    pub window: Option<String>,
 }
 
 /// A captured image, ready to send.
@@ -37,6 +52,7 @@ pub struct Shot {
     pub thumb_h: usize,
 }
 
+#[cfg(windows)]
 fn wide_text(buf: &[u16]) -> String {
     let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..n])
@@ -44,6 +60,7 @@ fn wide_text(buf: &[u16]) -> String {
 
 /// The window the user is looking at, if it's a real, visible app window (not ours, the
 /// desktop or the taskbar).
+#[cfg(windows)]
 pub fn foreground_window(ours: &[HWND]) -> Option<Target> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -76,18 +93,20 @@ pub fn foreground_window(ours: &[HWND]) -> Option<Target> {
         let mut title = [0u16; 256];
         GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
         let label = wide_text(&title);
-        Some(Target { rect: r, label: if label.trim().is_empty() { "this window".into() } else { label } })
+        let label = if label.trim().is_empty() { "this window".into() } else { label };
+        Some(Target { rect: crate::host::rect(r), label, window: None })
     }
 }
 
 /// The whole monitor at `at`.
+#[cfg(windows)]
 pub fn monitor_at(at: POINT) -> Target {
     unsafe {
         let mon = MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST);
         let mut mi: MONITORINFO = std::mem::zeroed();
         mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(mon, &mut mi);
-        Target { rect: mi.rcMonitor, label: "your screen".into() }
+        Target { rect: crate::host::rect(mi.rcMonitor), label: "your screen".into(), window: None }
     }
 }
 
@@ -100,8 +119,10 @@ pub fn fit(w: usize, h: usize, max: usize) -> (usize, usize) {
 /// Captures `target`, with a thumbnail fitting `thumb_max` (w, h). `ours` are kept out of
 /// the picture (excluded from capture only for this moment, so they still show in the
 /// user's own screenshots).
+#[cfg(windows)]
 pub fn capture(target: &Target, ours: &[HWND], thumb_max: (usize, usize)) -> Result<Shot, String> {
-    let r = clip_to_screen(target.rect);
+    let t = target.rect;
+    let r = clip_to_screen(RECT { left: t.left, top: t.top, right: t.right, bottom: t.bottom });
     let (sw, sh) = ((r.right - r.left) as usize, (r.bottom - r.top) as usize);
     if sw < 8 || sh < 8 {
         return Err("that window is off screen".into());
@@ -123,6 +144,7 @@ pub fn capture(target: &Target, ours: &[HWND], thumb_max: (usize, usize)) -> Res
     Ok(Shot { label: target.label.clone(), media_type, bytes, thumb, thumb_w, thumb_h })
 }
 
+#[cfg(windows)]
 fn clip_to_screen(r: RECT) -> RECT {
     unsafe {
         let (x, y) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
@@ -132,6 +154,7 @@ fn clip_to_screen(r: RECT) -> RECT {
 }
 
 /// Copies screen rectangle `r` into a `w` x `h` opaque BGRA image (smoothly scaled).
+#[cfg(windows)]
 unsafe fn grab(r: RECT, w: usize, h: usize) -> Result<Vec<u32>, String> {
     let screen = GetDC(std::ptr::null_mut());
     let dc = CreateCompatibleDC(screen);
@@ -175,11 +198,15 @@ unsafe fn grab(r: RECT, w: usize, h: usize) -> Result<Vec<u32>, String> {
     out.ok_or_else(|| "couldn't copy the screen".to_string())
 }
 
+#[cfg(windows)]
 const PNG: GUID = GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
+#[cfg(windows)]
 const JPEG: GUID = GUID::from_u128(0x557cf401_1a04_11d3_9a73_0000f81ef32e);
+#[cfg(windows)]
 const QUALITY: GUID = GUID::from_u128(0x1d5be4b5_fa4a_452d_9cdd_5db35105e7eb);
 
 /// Encodes opaque BGRA pixels as PNG, or JPEG if the PNG is too big to send.
+#[cfg(windows)]
 pub fn encode(pixels: &[u32], w: usize, h: usize) -> Result<(&'static str, Vec<u8>), String> {
     let png = gdiplus_save(pixels, w, h, &PNG, None)?;
     if png.len() <= MAX_BYTES {
@@ -189,6 +216,7 @@ pub fn encode(pixels: &[u32], w: usize, h: usize) -> Result<(&'static str, Vec<u
 }
 
 /// Saves through GDI+ to a temporary file and reads it back.
+#[cfg(windows)]
 fn gdiplus_save(pixels: &[u32], w: usize, h: usize, encoder: &GUID, quality: Option<u32>) -> Result<Vec<u8>, String> {
     const PIXEL_FORMAT_32BPP_RGB: i32 = 0x0002_2009;
     unsafe {
@@ -218,15 +246,52 @@ fn gdiplus_save(pixels: &[u32], w: usize, h: usize, encoder: &GUID, quality: Opt
     }
 }
 
+#[cfg(windows)]
 trait WideNul {
     fn encode_wide_nul(&self) -> Vec<u16>;
 }
 
+#[cfg(windows)]
 impl WideNul for std::ffi::OsStr {
     fn encode_wide_nul(&self) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
         self.encode_wide().chain(std::iter::once(0)).collect()
     }
+}
+
+/// Encodes BGRA pixels (straight alpha) as PNG, or opaque ones as JPEG if the PNG is too
+/// big to send.
+#[cfg(not(windows))]
+pub fn encode(pixels: &[u32], w: usize, h: usize) -> Result<(&'static str, Vec<u8>), String> {
+    let rgba: Vec<u8> = pixels.iter().flat_map(|&p| [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8]).collect();
+    let mut png = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut png, w as u32, h as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().map_err(|e| e.to_string())?;
+        writer.write_image_data(&rgba).map_err(|e| e.to_string())?;
+    }
+    if png.len() <= MAX_BYTES {
+        return Ok(("image/png", png));
+    }
+    let rgb: Vec<u8> = pixels.iter().flat_map(|&p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, 85)
+        .encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
+        .map_err(|e| e.to_string())?;
+    Ok(("image/jpeg", jpeg))
+}
+
+/// A captured picture (opaque BGRA, `w` x `h`) made ready to send: scaled down to what
+/// the models use, encoded, and thumbnailed for the chat tab.
+#[cfg(not(windows))]
+pub fn finish(pixels: &[u32], w: usize, h: usize, label: &str, thumb_max: (usize, usize)) -> Result<Shot, String> {
+    let (sw, sh) = fit(w, h, MAX_EDGE);
+    let (scaled, sw, sh) = if (sw, sh) == (w, h) { (pixels.to_vec(), w, h) } else { thumbnail(pixels, w, h, sw, sh) };
+    let (media_type, bytes) = encode(&scaled, sw, sh)?;
+    let (thumb, thumb_w, thumb_h) = thumbnail(&scaled, sw, sh, thumb_max.0, thumb_max.1);
+    Ok(Shot { label: label.to_string(), media_type, bytes, thumb, thumb_w, thumb_h })
 }
 
 /// A box-filtered thumbnail of `pixels` (`w` x `h`) that fits `max_w` x `max_h`.

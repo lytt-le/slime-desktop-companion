@@ -1,4 +1,5 @@
-//! What the settings panel remembers between runs: %APPDATA%\SlimeCompanion\settings.json.
+//! What the settings panel remembers between runs: settings.json in the data folder
+//! (%APPDATA%\SlimeCompanion on Windows, ~/.config/SlimeCompanion on Linux).
 
 use serde_json::{json, Value};
 
